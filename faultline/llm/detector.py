@@ -272,6 +272,7 @@ def _call_feature_detection(
         response = client.messages.parse(
             model=_MODEL,
             max_tokens=_MAX_TOKENS_FILE,
+            temperature=0,
             system=_DETECTION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             output_format=_FeatureDetectionResponse,
@@ -311,6 +312,7 @@ def _call_dir_detection(
         response = client.messages.parse(
             model=_MODEL,
             max_tokens=_MAX_TOKENS_DIR,
+            temperature=0,
             system=_DIR_DETECTION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             output_format=_FeatureDetectionResponse,
@@ -489,8 +491,8 @@ def _format_extra_context(
         )
 
     kw_lines = [
-        f"  {d} → {', '.join(kws)}"
-        for d, kws in dir_keywords.items()
+        f"  {d} → {', '.join(sorted(kws))}"
+        for d, kws in sorted(dir_keywords.items())
         if kws
     ]
     if kw_lines:
@@ -521,10 +523,10 @@ def _format_route_anchors(
 
     if dirs is None:
         lines = []
-        for path, sig in signatures.items():
+        for path, sig in sorted(signatures.items()):
             if not sig.routes:
                 continue
-            routes_str = ", ".join(sig.routes[:_MAX_ROUTES_PER_ENTRY])
+            routes_str = ", ".join(sorted(sig.routes)[:_MAX_ROUTES_PER_ENTRY])
             lines.append(f"  {path} → {routes_str}")
             if len(lines) >= _MAX_ROUTE_ANCHOR_FILES:
                 break
@@ -541,7 +543,7 @@ def _format_route_anchors(
     else:
         dirs_set = set(dirs)
         dir_routes: dict[str, list[str]] = {}
-        for path, sig in signatures.items():
+        for path, sig in sorted(signatures.items()):
             if not sig.routes:
                 continue
             parent = str(Path(path).parent)
@@ -777,6 +779,7 @@ def validate_api_key(api_key: str | None = None) -> tuple[bool, str]:
         client.messages.create(
             model=_MODEL,
             max_tokens=10,
+            temperature=0,
             messages=[{"role": "user", "content": "hi"}],
         )
         return True, ""
@@ -835,6 +838,7 @@ def _fetch_enrichments(
         response = client.messages.parse(
             model=_MODEL,
             max_tokens=1024,
+            temperature=0,
             system=(
                 "You are a software architecture analyst. "
                 "Analyze code modules by their directory names and file paths, "

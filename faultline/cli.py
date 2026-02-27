@@ -180,6 +180,8 @@ def analyze(
 
         # 6b. Detect flows within each feature (optional)
         if flows:
+            from faultline.analyzer.coverage import read_coverage
+            coverage_data = read_coverage(str(repo.working_tree_dir))
             feature_map = _detect_flows(
                 feature_map=feature_map,
                 repo_path=str(repo.working_tree_dir),
@@ -192,6 +194,7 @@ def analyze(
                 ollama_url=ollama_url,
                 signatures=signatures,
                 remote_url=remote_url,
+                coverage_data=coverage_data,
             )
 
         # 7. Print the report
@@ -302,6 +305,7 @@ def _detect_flows(
     ollama_url: str,
     signatures: dict | None = None,
     remote_url: str = "",
+    coverage_data: dict | None = None,
 ):
     """
     Runs flow detection for each feature and attaches Flow objects to the FeatureMap.
@@ -377,7 +381,7 @@ def _detect_flows(
             c for c in commits
             if any(f in feature_commit_files for f in c.files_changed)
         ]
-        flows = build_flows_metrics(feature_commits, flow_file_mappings, remote_url=remote_url)
+        flows = build_flows_metrics(feature_commits, flow_file_mappings, remote_url=remote_url, coverage_data=coverage_data)
         total_flows += len(flows)
 
         updated_features.append(feature.model_copy(update={"flows": flows}))

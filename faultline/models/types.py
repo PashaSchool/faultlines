@@ -2,6 +2,13 @@ from pydantic import BaseModel
 from datetime import datetime
 
 
+class TimelinePoint(BaseModel):
+    date: str          # ISO week label "YYYY-Www"
+    total_commits: int
+    bug_fix_commits: int
+    test_commits: int
+
+
 class Commit(BaseModel):
     sha: str
     message: str
@@ -38,6 +45,12 @@ class Flow(BaseModel):
     last_modified: datetime
     health_score: float        # 0-100, higher is better
     bug_fix_prs: list[PullRequest] = []
+    test_file_count: int = 0   # number of test files associated with this flow
+    weekly_points: list[TimelinePoint] = []  # weekly activity timeline
+    bus_factor: int = 1                      # authors with ≥20% of flow commits
+    health_trend: float | None = None        # first_half_bug_ratio - second_half; positive = improving
+    hotspot_files: list[str] = []            # source files with >40% bug_fix_ratio (≥3 commits)
+    coverage_pct: float | None = None        # avg line coverage % across source files; None if unavailable
 
 
 class Feature(BaseModel):

@@ -161,6 +161,7 @@ def _call_flow_detection(
         response = client.messages.parse(
             model=_MODEL,
             max_tokens=2048,
+            temperature=0,
             system=_FLOW_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             output_format=_FlowDetectionResponse,
