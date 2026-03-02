@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 import anthropic
@@ -22,7 +24,7 @@ _MAX_FILES_FOR_DETECTION = 500
 _MAX_TOKENS_FILE = 16_384
 _MAX_TOKENS_DIR  = 16_384
 
-_DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:7b"
+_DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
 _DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
 # When file count exceeds this, collapse to unique directories to save tokens
@@ -756,6 +758,556 @@ def _call_dir_detection_ollama(
         return _FeatureDetectionResponse.model_validate_json(response.message.content)
     except (ValidationError, Exception):
         return None
+
+
+# ── Cluster merge + name (import graph → semantic features) ──────────────────
+# Used when import-graph clusters need to be MERGED across business boundaries
+# and given semantic names in a single LLM call.
+# Unlike naming-only, LLM can merge N clusters → M features (M ≤ N).
+# Results are cached: same cluster structure → same output on every run.
+
+_MERGE_SYSTEM_PROMPT = """\
+You are a software architect merging import-dependency clusters into business features.
+
+## Context
+Files have been pre-grouped into clusters by analyzing import statements.
+Files inside a cluster directly import each other.
+Your job is to identify which clusters serve the same business feature and merge them,
+even when they have no direct import relationship (e.g. a Redux slice and the component
+that uses it via a hook; an API service and the page that renders its data).
+
+## Task
+1. Merge clusters that serve the same user-facing capability.
+2. Give each merged group a semantic business domain name.
+
+## Rules
+- Feature names: lowercase, hyphen-separated, 1–3 words.
+- Use business domain terminology, not technical layers.
+  Examples: "user-auth", "checkout", "analytics-dashboard", "notifications", "team-management".
+- Merge clusters by business purpose, not by technical role.
+  BAD: merge all hooks clusters into "hooks-feature".
+  GOOD: merge auth-hooks + auth-components + auth-api into "user-auth".
+- Keep genuinely distinct capabilities as separate features.
+- Every cluster must appear in exactly one feature — no omissions.
+- cluster_indices contains 1-based indices from the list provided.\
+"""
+
+_MERGE_USER_PROMPT = """\
+Below are code clusters formed from import dependency analysis.
+Group related clusters into business features and name each feature.
+{feature_hint}
+{clusters}
+
+For each feature: provide a feature_name and the list of cluster_indices (1-based) it contains.
+Every cluster index must appear in exactly one feature.\
+"""
+
+
+def _merge_feature_count_hint(n_clusters: int) -> str:
+    """Generates a scoped feature-count guidance line for the merge prompt.
+
+    Prevents local models from merging everything into one giant feature.
+    """
+    min_f = max(5, n_clusters // 6)
+    max_f = max(10, n_clusters // 3)
+    max_per = max(5, n_clusters // 8)
+    return (
+        f"\nYou have {n_clusters} clusters. "
+        f"Aim for {min_f}–{max_f} focused features. "
+        f"Do NOT put more than {max_per} clusters into a single feature "
+        "unless they are truly tightly related.\n"
+    )
+
+
+class _ClusterMergeItem(BaseModel):
+    feature_name: str
+    cluster_indices: list[int]
+
+
+class _ClusterMergeResponse(BaseModel):
+    features: list[_ClusterMergeItem]
+
+
+def _merge_cache_key(cluster_mapping: dict[str, list[str]], model: str) -> str:
+    """Stable cache key that includes both file membership and cluster structure."""
+    # Sort clusters by their sorted file list for a stable canonical form
+    clusters_repr = sorted([sorted(files) for files in cluster_mapping.values()])
+    content = json.dumps(clusters_repr) + model
+    return "merge_" + hashlib.sha256(content.encode()).hexdigest()[:24]
+
+
+def _extract_cluster_keywords(
+    cluster_mapping: dict[str, list[str]],
+    commits: list[Commit],
+) -> dict[str, list[str]]:
+    """Extracts top commit message keywords per cluster from git history.
+
+    For each cluster, collects commit messages of commits that touched any file
+    in that cluster, then returns the top 4 non-stop words. These keywords give
+    the LLM semantic hints about the business domain (e.g. "payment", "checkout",
+    "billing") even when file paths alone are ambiguous.
+
+    Bulk commits (>30 files) are excluded — they're refactors, not feature signals.
+    """
+    from collections import Counter
+
+    _MAX_FILES_BULK = 30
+
+    file_to_cluster: dict[str, str] = {
+        f: cluster_id
+        for cluster_id, files in cluster_mapping.items()
+        for f in files
+    }
+
+    cluster_counters: dict[str, Counter] = {c: Counter() for c in cluster_mapping}
+    word_pattern = re.compile(r"[a-z]{3,}")
+
+    for commit in commits:
+        if len(commit.files_changed) > _MAX_FILES_BULK:
+            continue
+        words = {
+            w for w in word_pattern.findall(commit.message.lower())
+            if w not in _COMMIT_STOP_WORDS
+        }
+        clusters_touched: set[str] = set()
+        for f in commit.files_changed:
+            if f in file_to_cluster:
+                clusters_touched.add(file_to_cluster[f])
+        for cluster_id in clusters_touched:
+            cluster_counters[cluster_id].update(words)
+
+    return {
+        cluster_id: [w for w, _ in counter.most_common(4)]
+        for cluster_id, counter in cluster_counters.items()
+        if counter
+    }
+
+
+def _format_clusters_for_merge_prompt(
+    cluster_mapping: dict[str, list[str]],
+    keywords_per_cluster: dict[str, list[str]] | None = None,
+) -> str:
+    """Formats clusters as a numbered list for the LLM merge prompt.
+
+    When keywords_per_cluster is provided, each cluster entry includes its
+    top commit message topics as a hint for semantic business domain naming.
+    """
+    lines = []
+    for i, (cluster_id, files) in enumerate(cluster_mapping.items(), start=1):
+        sample = files[:8]
+        file_lines = "\n".join(f"  {f}" for f in sample)
+        suffix = f"\n  … ({len(files) - 8} more)" if len(files) > 8 else ""
+        keywords = (keywords_per_cluster or {}).get(cluster_id, [])
+        kw_line = f"\n  Commit topics: {', '.join(keywords)}" if keywords else ""
+        lines.append(f"Cluster {i} ({cluster_id}):{kw_line}\n{file_lines}{suffix}")
+    return "\n\n".join(lines)
+
+
+def _apply_cluster_merge(
+    cluster_mapping: dict[str, list[str]],
+    merge_response: _ClusterMergeResponse,
+) -> dict[str, list[str]]:
+    """Builds the merged feature mapping from the LLM response.
+
+    Handles duplicate names, out-of-range indices, and unassigned clusters
+    (any cluster not referenced falls back to its original directory-derived name).
+    """
+    cluster_ids = list(cluster_mapping.keys())
+    assigned: set[int] = set()
+    result: dict[str, list[str]] = {}
+    used_names: set[str] = set()
+
+    for item in merge_response.features:
+        merged_files: list[str] = []
+        for idx in item.cluster_indices:
+            if 1 <= idx <= len(cluster_ids) and idx not in assigned:
+                cluster_id = cluster_ids[idx - 1]
+                merged_files.extend(cluster_mapping[cluster_id])
+                assigned.add(idx)
+
+        if not merged_files:
+            continue
+
+        name = item.feature_name
+        if name in used_names:
+            suffix = 2
+            while f"{name}-{suffix}" in used_names:
+                suffix += 1
+            name = f"{name}-{suffix}"
+        used_names.add(name)
+        result[name] = sorted(merged_files)
+
+    # Fallback: any cluster not referenced by LLM keeps its original name
+    for i, cluster_id in enumerate(cluster_ids, start=1):
+        if i not in assigned:
+            name = cluster_id
+            if name in used_names:
+                suffix = 2
+                while f"{name}-{suffix}" in used_names:
+                    suffix += 1
+                name = f"{name}-{suffix}"
+            used_names.add(name)
+            result[name] = cluster_mapping[cluster_id]
+
+    return result
+
+
+def _call_cluster_merge(
+    client: anthropic.Anthropic,
+    cluster_mapping: dict[str, list[str]],
+    keywords_per_cluster: dict[str, list[str]] | None = None,
+) -> _ClusterMergeResponse | None:
+    """Sends all clusters to Claude for merge+name. Returns None on any failure."""
+    prompt = _MERGE_USER_PROMPT.format(
+        clusters=_format_clusters_for_merge_prompt(cluster_mapping, keywords_per_cluster),
+        feature_hint=_merge_feature_count_hint(len(cluster_mapping)),
+    )
+    try:
+        response = client.messages.parse(
+            model=_MODEL,
+            max_tokens=2048,
+            temperature=0,
+            system=_MERGE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+            output_format=_ClusterMergeResponse,
+        )
+        return response.parsed_output
+    except (
+        anthropic.AuthenticationError,
+        anthropic.PermissionDeniedError,
+        anthropic.NotFoundError,
+        anthropic.RateLimitError,
+        anthropic.APIStatusError,
+        anthropic.APIConnectionError,
+        ValidationError,
+    ):
+        return None
+
+
+def merge_and_name_clusters_llm(
+    cluster_mapping: dict[str, list[str]],
+    api_key: str | None = None,
+    commits: list[Commit] | None = None,
+) -> dict[str, list[str]]:
+    """Uses Claude to merge import-graph clusters into business features and name them.
+
+    Unlike name_clusters_llm(), this can merge multiple clusters into one feature —
+    essential when related files don't import each other directly (e.g. Redux slices,
+    separate services, cross-cutting utilities).
+
+    When commits are provided, extracts top commit message keywords per cluster
+    and includes them in the prompt as semantic naming hints.
+
+    Results are cached by cluster structure hash — same codebase → same result.
+    Falls back to the original cluster_mapping on any error.
+
+    Args:
+        cluster_mapping: Output of build_import_clusters().
+        api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+        commits: Optional commit history for keyword extraction.
+    """
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not key or not cluster_mapping:
+        return cluster_mapping
+
+    cache_key = _merge_cache_key(cluster_mapping, _MODEL)
+    cached = _read_name_cache(cache_key)
+    if cached is not None:
+        # cached format for merge is the full feature→files mapping
+        if isinstance(next(iter(cached.values()), None), list):
+            return cached  # type: ignore[return-value]
+
+    keywords_per_cluster = _extract_cluster_keywords(cluster_mapping, commits) if commits else None
+
+    client = anthropic.Anthropic(api_key=key)
+    merge_response = _call_cluster_merge(client, cluster_mapping, keywords_per_cluster)
+    if merge_response:
+        merged = _apply_cluster_merge(cluster_mapping, merge_response)
+        _write_name_cache(cache_key, merged)  # type: ignore[arg-type]
+        return merged
+
+    return cluster_mapping
+
+
+def _call_cluster_merge_ollama(
+    cluster_mapping: dict[str, list[str]],
+    model: str,
+    host: str,
+    keywords_per_cluster: dict[str, list[str]] | None = None,
+) -> _ClusterMergeResponse | None:
+    """Calls Ollama for cluster merge+name. Returns None on any failure."""
+    try:
+        import ollama as _ollama
+    except ImportError:
+        return None
+
+    prompt = _MERGE_USER_PROMPT.format(
+        clusters=_format_clusters_for_merge_prompt(cluster_mapping, keywords_per_cluster),
+        feature_hint=_merge_feature_count_hint(len(cluster_mapping)),
+    )
+    try:
+        client = _ollama.Client(host=host)
+        response = client.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": _MERGE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            format=_ClusterMergeResponse.model_json_schema(),
+        )
+        return _ClusterMergeResponse.model_validate_json(response.message.content)
+    except (ValidationError, Exception):
+        return None
+
+
+def merge_and_name_clusters_ollama(
+    cluster_mapping: dict[str, list[str]],
+    model: str = _DEFAULT_OLLAMA_MODEL,
+    host: str = _DEFAULT_OLLAMA_HOST,
+    commits: list[Commit] | None = None,
+) -> dict[str, list[str]]:
+    """Ollama version of merge_and_name_clusters_llm. See that function for full docs."""
+    if not cluster_mapping:
+        return cluster_mapping
+
+    cache_key = _merge_cache_key(cluster_mapping, model)
+    cached = _read_name_cache(cache_key)
+    if cached is not None:
+        if isinstance(next(iter(cached.values()), None), list):
+            return cached  # type: ignore[return-value]
+
+    keywords_per_cluster = _extract_cluster_keywords(cluster_mapping, commits) if commits else None
+
+    merge_response = _call_cluster_merge_ollama(cluster_mapping, model, host, keywords_per_cluster)
+    if merge_response:
+        merged = _apply_cluster_merge(cluster_mapping, merge_response)
+        _write_name_cache(cache_key, merged)  # type: ignore[arg-type]
+        return merged
+
+    return cluster_mapping
+
+
+# ── Cluster naming (co-change grouping → semantic names) ─────────────────────
+# Used when co-change detection produced the clusters and LLM only needs to name them.
+# Results are cached: same file set → same names on every run.
+
+_NAME_CACHE_DIR = Path.home() / ".faultline" / "llm-cache"
+_NAME_CACHE_TTL_DAYS = 90
+
+_NAMING_SYSTEM_PROMPT = """\
+You are a software architect assigning business domain names to feature clusters.
+Each cluster is a group of files that frequently change together in git history —
+they belong to the same business feature even if spread across multiple directories.
+
+Rules:
+- Feature names must be lowercase, hyphen-separated, 1–3 words.
+- Use business domain terminology, not technical layer names.
+- Examples: "user-auth", "payment-processing", "dashboard", "notifications", "team-management".
+- Every cluster must receive a unique name.
+- Return exactly one name per cluster index — no skipping.\
+"""
+
+_NAMING_USER_PROMPT = """\
+Name each feature cluster below. Each cluster contains files that change together in git.
+
+{clusters}
+
+Return a feature_name for each cluster by its index.\
+"""
+
+
+class _ClusterNamingItem(BaseModel):
+    index: int
+    feature_name: str
+
+
+class _ClusterNamingResponse(BaseModel):
+    features: list[_ClusterNamingItem]
+
+
+def _cluster_cache_key(cluster_mapping: dict[str, list[str]], model: str) -> str:
+    """Stable SHA256 cache key based on all files across all clusters."""
+    all_files = sorted(f for files in cluster_mapping.values() for f in files)
+    content = json.dumps(all_files) + model
+    return hashlib.sha256(content.encode()).hexdigest()[:24]
+
+
+def _read_name_cache(key: str) -> dict[str, str] | None:
+    """Returns cached {cluster_id: feature_name} mapping or None if missing/expired."""
+    path = _NAME_CACHE_DIR / f"{key}.json"
+    if not path.exists():
+        return None
+    age_days = (datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)).days
+    if age_days > _NAME_CACHE_TTL_DAYS:
+        path.unlink()
+        return None
+    return json.loads(path.read_text())
+
+
+def _write_name_cache(key: str, names: dict[str, str]) -> None:
+    _NAME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (_NAME_CACHE_DIR / f"{key}.json").write_text(json.dumps(names))
+
+
+def _format_clusters_for_prompt(cluster_mapping: dict[str, list[str]]) -> str:
+    """Formats cluster mapping as a numbered list for the naming prompt."""
+    lines = []
+    for i, (cluster_id, files) in enumerate(cluster_mapping.items(), start=1):
+        sample = files[:8]
+        file_lines = "\n".join(f"  {f}" for f in sample)
+        suffix = f" … ({len(files) - 8} more)" if len(files) > 8 else ""
+        lines.append(f"Cluster {i}:\n{file_lines}{suffix}")
+    return "\n\n".join(lines)
+
+
+def _apply_cluster_names(
+    cluster_mapping: dict[str, list[str]],
+    names: dict[str, str],
+) -> dict[str, list[str]]:
+    """Replaces cluster IDs with LLM-generated names, deduplicating collisions."""
+    result: dict[str, list[str]] = {}
+    used: set[str] = set()
+    for cluster_id, files in cluster_mapping.items():
+        name = names.get(cluster_id, cluster_id)
+        if name in used:
+            suffix = 2
+            while f"{name}-{suffix}" in used:
+                suffix += 1
+            name = f"{name}-{suffix}"
+        used.add(name)
+        result[name] = files
+    return result
+
+
+def _call_cluster_naming(
+    client: anthropic.Anthropic,
+    cluster_mapping: dict[str, list[str]],
+) -> dict[str, str] | None:
+    """Sends all clusters to Claude in one call. Returns {cluster_id: name} or None."""
+    cluster_ids = list(cluster_mapping.keys())
+    prompt = _NAMING_USER_PROMPT.format(
+        clusters=_format_clusters_for_prompt(cluster_mapping),
+    )
+
+    try:
+        response = client.messages.parse(
+            model=_MODEL,
+            max_tokens=512,
+            temperature=0,
+            system=_NAMING_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+            output_format=_ClusterNamingResponse,
+        )
+        items = response.parsed_output.features
+        # Map 1-based index back to cluster_id
+        return {
+            cluster_ids[item.index - 1]: item.feature_name
+            for item in items
+            if 1 <= item.index <= len(cluster_ids)
+        }
+    except (
+        anthropic.AuthenticationError,
+        anthropic.PermissionDeniedError,
+        anthropic.NotFoundError,
+        anthropic.RateLimitError,
+        anthropic.APIStatusError,
+        anthropic.APIConnectionError,
+        ValidationError,
+        IndexError,
+    ):
+        return None
+
+
+def name_clusters_llm(
+    cluster_mapping: dict[str, list[str]],
+    api_key: str | None = None,
+) -> dict[str, list[str]]:
+    """Uses Claude to assign semantic names to co-change clusters.
+
+    Results are cached by a hash of the file set — same repo state always
+    returns the same names without making another API call.
+
+    Falls back to the original cluster_mapping (directory-derived names)
+    on any error or missing API key.
+
+    Args:
+        cluster_mapping: Output of detect_features_from_cochange().
+        api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+    """
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not key or not cluster_mapping:
+        return cluster_mapping
+
+    cache_key = _cluster_cache_key(cluster_mapping, _MODEL)
+    cached = _read_name_cache(cache_key)
+    if cached is not None:
+        return _apply_cluster_names(cluster_mapping, cached)
+
+    client = anthropic.Anthropic(api_key=key)
+    names = _call_cluster_naming(client, cluster_mapping)
+    if names:
+        _write_name_cache(cache_key, names)
+        return _apply_cluster_names(cluster_mapping, names)
+
+    return cluster_mapping
+
+
+def _call_cluster_naming_ollama(
+    cluster_mapping: dict[str, list[str]],
+    model: str,
+    host: str,
+) -> dict[str, str] | None:
+    """Calls Ollama to name clusters. Returns {cluster_id: name} or None."""
+    try:
+        import ollama as _ollama
+    except ImportError:
+        return None
+
+    cluster_ids = list(cluster_mapping.keys())
+    prompt = _NAMING_USER_PROMPT.format(
+        clusters=_format_clusters_for_prompt(cluster_mapping),
+    )
+
+    try:
+        client = _ollama.Client(host=host)
+        response = client.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": _NAMING_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            format=_ClusterNamingResponse.model_json_schema(),
+        )
+        parsed = _ClusterNamingResponse.model_validate_json(response.message.content)
+        return {
+            cluster_ids[item.index - 1]: item.feature_name
+            for item in parsed.features
+            if 1 <= item.index <= len(cluster_ids)
+        }
+    except (ValidationError, IndexError, Exception):
+        return None
+
+
+def name_clusters_ollama(
+    cluster_mapping: dict[str, list[str]],
+    model: str = _DEFAULT_OLLAMA_MODEL,
+    host: str = _DEFAULT_OLLAMA_HOST,
+) -> dict[str, list[str]]:
+    """Ollama version of name_clusters_llm. See name_clusters_llm() for full docs."""
+    if not cluster_mapping:
+        return cluster_mapping
+
+    cache_key = _cluster_cache_key(cluster_mapping, model)
+    cached = _read_name_cache(cache_key)
+    if cached is not None:
+        return _apply_cluster_names(cluster_mapping, cached)
+
+    names = _call_cluster_naming_ollama(cluster_mapping, model, host)
+    if names:
+        _write_name_cache(cache_key, names)
+        return _apply_cluster_names(cluster_mapping, names)
+
+    return cluster_mapping
 
 
 def validate_api_key(api_key: str | None = None) -> tuple[bool, str]:

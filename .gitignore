@@ -48,9 +48,6 @@ htmlcov/
 # Hatch
 .hatch/
 
-CLAUDE.md
-IMPROVEMENTS.md
-
 # Dev dashboard (personal use only)
 dashboard/
 

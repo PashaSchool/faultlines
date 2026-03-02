@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>faultline — Turn your git history into a feature risk map</title>
+  <meta name="description" content="Automatically detect features in your codebase and see which ones accumulate the most bugs. No Jira. No integrations. Just git.">
+
+  <!-- Open Graph / Product Hunt -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="faultline — Feature Risk Map from Git History">
+  <meta property="og:description" content="Know exactly which features are accumulating technical debt — without touching Jira. Point at any git repo, get a risk map in seconds.">
+  <meta property="og:image" content="https://faultline.dev/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="faultline — Feature Risk Map from Git History">
+  <meta name="twitter:description" content="Know exactly which features are accumulating technical debt — without touching Jira.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #08090d;
+      --bg-2:      #0f1117;
+      --bg-3:      #161820;
+      --border:    rgba(255,255,255,0.08);
+      --border-h:  rgba(255,255,255,0.15);
+      --accent:    #00e5a0;
+      --accent-dim:#00c487;
+      --red:       #ff4d4d;
+      --yellow:    #ffc040;
+      --text:      #e8eaf0;
+      --muted:     #8b90a0;
+      --radius:    12px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 40px; height: 64px;
+      background: rgba(8,9,13,0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600; font-size: 18px; color: var(--accent);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .nav-logo span { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 4px; }
+    .nav-right { display: flex; align-items: center; gap: 20px; }
+    .nav-link { color: var(--muted); font-size: 14px; transition: color 0.2s; }
+    .nav-link:hover { color: var(--text); }
+    .nav-cta {
+      background: var(--accent); color: #08090d;
+      padding: 8px 18px; border-radius: 8px;
+      font-size: 14px; font-weight: 600;
+      transition: opacity 0.2s;
+    }
+    .nav-cta:hover { opacity: 0.85; }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; padding: 120px 24px 80px;
+      position: relative; overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
+      width: 800px; height: 800px;
+      background: radial-gradient(circle, rgba(0,229,160,0.07) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(0,229,160,0.1); border: 1px solid rgba(0,229,160,0.25);
+      color: var(--accent); padding: 6px 14px; border-radius: 100px;
+      font-size: 12px; font-weight: 600; letter-spacing: 0.5px;
+      text-transform: uppercase; margin-bottom: 32px;
+    }
+    .badge::before { content: '●'; font-size: 8px; }
+
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 72px);
+      font-weight: 900; line-height: 1.05;
+      letter-spacing: -2px; max-width: 900px;
+    }
+    .hero h1 em {
+      font-style: normal;
+      background: linear-gradient(135deg, var(--accent) 0%, #4dd9ff 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-sub {
+      font-size: clamp(16px, 2vw, 20px); color: var(--muted);
+      max-width: 600px; margin: 24px auto 40px; line-height: 1.6;
+    }
+
+    .hero-actions {
+      display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;
+      margin-bottom: 64px;
+    }
+    .btn-primary {
+      background: var(--accent); color: #08090d;
+      padding: 14px 28px; border-radius: 10px;
+      font-size: 15px; font-weight: 700;
+      transition: transform 0.15s, opacity 0.15s;
+    }
+    .btn-primary:hover { transform: translateY(-1px); opacity: 0.9; }
+    .btn-secondary {
+      background: var(--bg-3); color: var(--text);
+      border: 1px solid var(--border-h);
+      padding: 14px 28px; border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      transition: border-color 0.2s;
+    }
+    .btn-secondary:hover { border-color: var(--accent); }
+
+    /* Install snippet */
+    .install-block {
+      display: flex; align-items: center; gap: 0;
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden; font-family: 'JetBrains Mono', monospace;
+      font-size: 14px; margin: 0 auto;
+    }
+    .install-block .prompt {
+      background: var(--bg-3); padding: 12px 16px;
+      color: var(--accent); border-right: 1px solid var(--border);
+    }
+    .install-block .cmd { padding: 12px 20px; color: var(--text); }
+    .install-block .copy-btn {
+      padding: 12px 16px; cursor: pointer; color: var(--muted);
+      border: none; background: none; font-size: 16px; border-left: 1px solid var(--border);
+      transition: color 0.2s;
+    }
+    .install-block .copy-btn:hover { color: var(--accent); }
+
+    /* Terminal preview */
+    .terminal-hero {
+      margin-top: 64px; width: 100%; max-width: 720px;
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden; text-align: left;
+    }
+    .terminal-bar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 12px 16px; background: var(--bg-3); border-bottom: 1px solid var(--border);
+    }
+    .dot { width: 12px; height: 12px; border-radius: 50%; }
+    .dot-r { background: #ff5f57; } .dot-y { background: #febc2e; } .dot-g { background: #28c840; }
+    .t-title { color: var(--muted); font-size: 13px; margin-left: auto; font-family: 'JetBrains Mono', monospace; }
+    .terminal-body { padding: 20px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; }
+    .t-cmd { color: var(--accent); } .t-dim { color: var(--muted); }
+    .t-green { color: #28c840; } .t-red { color: var(--red); } .t-yellow { color: var(--yellow); }
+    .t-blue { color: #4dd9ff; } .t-bold { font-weight: 600; }
+
+    /* ── SECTIONS COMMON ── */
+    section { padding: 100px 24px; }
+    .section-tag {
+      font-size: 12px; font-weight: 600; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 44px); font-weight: 800;
+      letter-spacing: -1px; line-height: 1.15; margin-bottom: 16px;
+    }
+    .section-sub { font-size: 18px; color: var(--muted); max-width: 560px; line-height: 1.6; }
+    .container { max-width: 1100px; margin: 0 auto; }
+
+    /* ── PAIN SECTION ── */
+    .pain { background: var(--bg); }
+    .pain-header { text-align: center; margin-bottom: 64px; }
+    .pain-header .section-sub { margin: 0 auto; }
+    .pain-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+    }
+    .pain-card {
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .pain-card:hover { border-color: var(--border-h); }
+    .pain-icon { font-size: 28px; margin-bottom: 16px; }
+    .pain-card h3 { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .pain-card p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+
+    /* ── HOW IT WORKS ── */
+    .how { background: var(--bg-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .how-header { text-align: center; margin-bottom: 72px; }
+    .how-header .section-sub { margin: 0 auto; }
+
+    .how-layout {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .steps-left { display: flex; flex-direction: column; gap: 40px; }
+    .steps-right { display: flex; flex-direction: column; gap: 40px; }
+
+    .step {
+      display: flex; gap: 16px; align-items: flex-start;
+    }
+    .steps-right .step { flex-direction: row-reverse; text-align: right; }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 40px; height: 40px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--bg-3);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+      color: var(--accent);
+    }
+    .step-content h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .step-content p { font-size: 14px; color: var(--muted); line-height: 1.55; }
+
+    /* Center mockup */
+    .center-mockup {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 16px; overflow: hidden; min-width: 320px; max-width: 360px;
+    }
+    .mockup-bar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 10px 14px; background: var(--bg-3); border-bottom: 1px solid var(--border);
+    }
+    .mockup-body { padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.65; }
+
+    .result-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(0,229,160,0.12); border: 1px solid rgba(0,229,160,0.3);
+      color: var(--accent); padding: 4px 12px; border-radius: 100px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    /* ── FEATURES GRID ── */
+    .features { background: var(--bg); }
+    .features-header { text-align: center; margin-bottom: 64px; }
+    .features-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+    }
+    .feature-card {
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 32px;
+      transition: border-color 0.2s, transform 0.15s;
+    }
+    .feature-card:hover { border-color: var(--border-h); transform: translateY(-2px); }
+    .feature-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      background: rgba(0,229,160,0.1); border: 1px solid rgba(0,229,160,0.2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; margin-bottom: 20px;
+    }
+    .feature-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+    .feature-card p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+    .feature-tag {
+      display: inline-block; margin-top: 16px;
+      background: var(--bg-3); border: 1px solid var(--border);
+      color: var(--muted); padding: 4px 10px; border-radius: 6px;
+      font-size: 12px; font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ── SOCIAL PROOF ── */
+    .proof { background: var(--bg-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .proof-inner { text-align: center; }
+    .proof-label { font-size: 13px; color: var(--muted); margin-bottom: 40px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+    .proof-stats {
+      display: flex; gap: 64px; justify-content: center; flex-wrap: wrap;
+    }
+    .proof-stat h3 { font-size: 40px; font-weight: 900; color: var(--accent); letter-spacing: -1px; }
+    .proof-stat p { font-size: 14px; color: var(--muted); margin-top: 4px; }
+
+    /* ── CTA ── */
+    .cta {
+      background: var(--bg);
+      padding: 100px 24px 120px;
+    }
+    .cta-box {
+      max-width: 600px; margin: 0 auto;
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 56px 48px; text-align: center;
+      position: relative; overflow: hidden;
+    }
+    .cta-box::before {
+      content: '';
+      position: absolute; top: -100px; left: 50%; transform: translateX(-50%);
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, rgba(0,229,160,0.05) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .cta-box .section-tag { margin-bottom: 16px; }
+    .cta-box h2 { font-size: clamp(24px, 3vw, 36px); font-weight: 800; letter-spacing: -1px; margin-bottom: 12px; }
+    .cta-box p { font-size: 16px; color: var(--muted); margin-bottom: 40px; }
+
+    .cta-form { display: flex; flex-direction: column; gap: 14px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; text-align: left; }
+    .form-label { font-size: 13px; font-weight: 600; color: var(--muted); }
+    .form-input {
+      background: var(--bg-3); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 16px;
+      color: var(--text); font-size: 15px; font-family: inherit;
+      outline: none; transition: border-color 0.2s;
+      width: 100%;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-input::placeholder { color: var(--muted); }
+
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+    .submit-btn {
+      background: var(--accent); color: #08090d;
+      border: none; border-radius: 10px; padding: 14px 24px;
+      font-size: 15px; font-weight: 700; font-family: inherit;
+      cursor: pointer; width: 100%; margin-top: 8px;
+      transition: opacity 0.2s, transform 0.15s;
+    }
+    .submit-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+    .form-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+    .success-msg {
+      display: none; padding: 20px; border-radius: 10px;
+      background: rgba(0,229,160,0.1); border: 1px solid rgba(0,229,160,0.25);
+      color: var(--accent); font-weight: 600; font-size: 15px;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 40px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 16px;
+    }
+    .footer-logo { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--accent); }
+    .footer-links { display: flex; gap: 24px; }
+    .footer-links a { font-size: 14px; color: var(--muted); transition: color 0.2s; }
+    .footer-links a:hover { color: var(--text); }
+    .footer-copy { font-size: 13px; color: var(--muted); }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 900px) {
+      nav { padding: 0 20px; }
+      .nav-right .nav-link { display: none; }
+      .how-layout { grid-template-columns: 1fr; }
+      .steps-right { order: 3; }
+      .center-mockup { order: 2; margin: 0 auto; }
+      .steps-left { order: 1; }
+      .steps-right .step { flex-direction: row; text-align: left; }
+      .features-grid { grid-template-columns: 1fr; }
+      .form-row { grid-template-columns: 1fr; }
+      .cta-box { padding: 36px 24px; }
+      footer { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 600px) {
+      section { padding: 72px 16px; }
+      .hero { padding: 100px 16px 64px; }
+      .install-block .cmd { font-size: 12px; }
+    }
+
+    /* Terminal table */
+    .t-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+    }
+    .t-table thead tr {
+      border-top: 1px solid rgba(255,255,255,0.15);
+      border-bottom: 1px solid rgba(255,255,255,0.15);
+    }
+    .t-table tbody tr:last-child {
+      border-bottom: 1px solid rgba(255,255,255,0.15);
+    }
+    .t-table th {
+      padding: 5px 14px;
+      color: var(--muted);
+      font-weight: 500;
+      text-align: right;
+      white-space: nowrap;
+      border-left: 1px solid rgba(255,255,255,0.15);
+    }
+    .t-table th:first-child { text-align: left; border-left: 1px solid rgba(255,255,255,0.15); }
+    .t-table th:last-child { border-right: 1px solid rgba(255,255,255,0.15); }
+    .t-table td {
+      padding: 4px 14px;
+      text-align: right;
+      white-space: nowrap;
+      border-left: 1px solid rgba(255,255,255,0.10);
+    }
+    .t-table td:first-child { text-align: left; border-left: 1px solid rgba(255,255,255,0.15); }
+    .t-table td:last-child { border-right: 1px solid rgba(255,255,255,0.15); }
+    .t-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">⚡ faultline <span>beta</span></div>
+  <div class="nav-right">
+    <a class="nav-link" href="#how-it-works">How it works</a>
+    <a class="nav-link" href="#features">Features</a>
+    <a class="nav-link" href="https://github.com/pkuzina/faultline" target="_blank">GitHub</a>
+    <a class="nav-cta" href="#early-access">Get early access</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="badge">Open source · Free to try</div>
+
+  <h1>Turn your git history into<br>a <em>feature risk map</em></h1>
+
+  <p class="hero-sub">
+    Know exactly which parts of your codebase are accumulating technical debt —
+    without Jira, without integrations, without config.
+    Just point it at any git repo.
+  </p>
+
+  <div class="hero-actions">
+    <a class="btn-primary" href="#early-access">Get early access →</a>
+    <a class="btn-secondary" href="https://github.com/pkuzina/faultline" target="_blank">⭐ Star on GitHub</a>
+  </div>
+
+  <div class="install-block">
+    <div class="prompt">$</div>
+    <div class="cmd" id="install-cmd">pip install faultline</div>
+    <button class="copy-btn" onclick="copyInstall()" title="Copy">⎘</button>
+  </div>
+
+  <!-- Terminal preview -->
+  <div class="terminal-hero">
+    <div class="terminal-bar">
+      <div class="dot dot-r"></div>
+      <div class="dot dot-y"></div>
+      <div class="dot dot-g"></div>
+      <div class="t-title">faultline analyze . --llm --src src/</div>
+    </div>
+    <div class="terminal-body">
+      <div><span class="t-blue">Analyzing:</span> /path/to/my-app</div>
+      <div class="t-dim">~ 1,240 commits in range → ~18 sec</div>
+      <div><span class="t-green">✓</span> Found 1,240 commits over 365 days</div>
+      <div><span class="t-green">✓</span> Found 312 files under <span class="t-dim">src/</span></div>
+      <div class="t-dim">Import graph: 312 files → 9 clusters</div>
+      <div><span class="t-blue">Merging &amp; naming features with Claude...</span></div>
+      <div><span class="t-green">✓</span> Claude merged → 6 features</div>
+      <div><span class="t-green">✓</span> Detected 6 features</div>
+      <div>&nbsp;</div>
+      <div class="t-bold" style="text-align:center; margin-bottom:6px;">Features by Risk</div>
+      <table class="t-table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Health</th>
+            <th>Commits</th>
+            <th>Bug Fixes</th>
+            <th>Bug %</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="t-red t-bold">payments</td>
+            <td class="t-red">23</td>
+            <td>112</td>
+            <td>38</td>
+            <td>33.9%</td>
+          </tr>
+          <tr>
+            <td class="t-yellow">auth</td>
+            <td class="t-yellow">54</td>
+            <td>48</td>
+            <td>12</td>
+            <td>25.0%</td>
+          </tr>
+          <tr>
+            <td class="t-green">dashboard</td>
+            <td class="t-green">91</td>
+            <td>67</td>
+            <td>2</td>
+            <td>3.0%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div>&nbsp;</div>
+      <div class="t-dim">Saved: .faultline/feature-map-20260302-143221.json</div>
+    </div>
+  </div>
+</section>
+
+<!-- PAIN SECTION -->
+<section class="pain" id="pain">
+  <div class="container">
+    <div class="pain-header">
+      <div class="section-tag">The problem</div>
+      <h2 class="section-title">You know you have tech debt.<br>You just don't know where.</h2>
+      <p class="section-sub">
+        Engineering managers make refactoring decisions based on gut feeling.
+        faultline gives you the data.
+      </p>
+    </div>
+
+    <div class="pain-grid">
+      <div class="pain-card">
+        <div class="pain-icon">🔥</div>
+        <h3>Bugs keep coming from the same place</h3>
+        <p>Every sprint, the same features generate support tickets. You can feel it — but you can't prove it to leadership without hard data.</p>
+      </div>
+      <div class="pain-card">
+        <div class="pain-icon">🗂️</div>
+        <h3>Jira doesn't reflect reality</h3>
+        <p>Tickets are inconsistently tagged. Some engineers label everything "bug fix," others don't. Your tooling is only as good as your process.</p>
+      </div>
+      <div class="pain-card">
+        <div class="pain-icon">🧭</div>
+        <h3>Planning refactoring blindly</h3>
+        <p>You want to invest in paying down tech debt, but without a risk map you're guessing which features actually need attention.</p>
+      </div>
+      <div class="pain-card">
+        <div class="pain-icon">👤</div>
+        <h3>Bus factor hiding in plain sight</h3>
+        <p>One engineer owns the payments feature. Nobody else knows it. faultline surfaces knowledge concentration before it becomes a crisis.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" id="how-it-works">
+  <div class="container">
+    <div class="how-header">
+      <div class="section-tag">How it works</div>
+      <h2 class="section-title">From git log to risk map<br>in under a minute</h2>
+      <p class="section-sub">No integrations. No account setup. Just one command.</p>
+    </div>
+
+    <div class="how-layout">
+      <!-- Left steps -->
+      <div class="steps-left">
+        <div class="step">
+          <div class="step-num">01</div>
+          <div class="step-content">
+            <h3>Point at any git repo</h3>
+            <p>Run <code style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--accent)">faultline analyze .</code> in any project directory. No setup, no config files, no account.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">02</div>
+          <div class="step-content">
+            <h3>Git history is analyzed</h3>
+            <p>faultline reads commit messages, changed files, and authors across the past year. Bug fixes are detected automatically by commit message patterns.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center mockup -->
+      <div class="center-mockup">
+        <div class="mockup-bar">
+          <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+        </div>
+        <div class="mockup-body">
+          <div style="text-align:center; margin-bottom:12px;">
+            <div class="result-badge">✓ Analysis complete</div>
+          </div>
+          <div class="t-dim" style="font-size:11px;">Feature risk map</div>
+          <div style="margin-top:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+              <span class="t-red">✗ payments</span>
+              <span style="background:rgba(255,77,77,0.15);color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+              <span class="t-yellow">! auth</span>
+              <span style="background:rgba(255,192,64,0.15);color:var(--yellow);padding:2px 8px;border-radius:4px;font-size:11px;">54</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+              <span class="t-green">✓ notifications</span>
+              <span style="background:rgba(40,200,64,0.15);color:#28c840;padding:2px 8px;border-radius:4px;font-size:11px;">78</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;">
+              <span class="t-green">✓ dashboard</span>
+              <span style="background:rgba(40,200,64,0.15);color:#28c840;padding:2px 8px;border-radius:4px;font-size:11px;">91</span>
+            </div>
+          </div>
+          <div style="margin-top:14px;padding:10px;background:var(--bg-3);border-radius:8px;">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">↳ checkout-flow</div>
+            <div style="height:4px;background:var(--bg);border-radius:2px;overflow:hidden;">
+              <div style="width:23%;height:100%;background:var(--red);border-radius:2px;"></div>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:8px;margin-bottom:6px;">↳ refund-flow</div>
+            <div style="height:4px;background:var(--bg);border-radius:2px;overflow:hidden;">
+              <div style="width:41%;height:100%;background:var(--yellow);border-radius:2px;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right steps -->
+      <div class="steps-right">
+        <div class="step">
+          <div class="step-num">03</div>
+          <div class="step-content">
+            <h3>Features detected automatically</h3>
+            <p>Import graph clustering groups files by how they connect. With <code style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--accent)">--llm</code>, Claude maps clusters to business domains — no folder naming conventions required.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num" style="background:rgba(0,229,160,0.1);border-color:rgba(0,229,160,0.3);">✓</div>
+          <div class="step-content">
+            <h3>You get actionable risk data</h3>
+            <p>A health score per feature (0–100), bug fix ratio, commit trends, and optional flow breakdown — saved as JSON and printed to your terminal.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES GRID -->
+<section class="features" id="features">
+  <div class="container">
+    <div class="features-header">
+      <div class="section-tag">Features</div>
+      <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Zero configuration</h3>
+        <p>No YAML files, no account creation, no integrations. Run one command in any git repository and get results immediately. Works on any language — JavaScript, Python, Go, Rust.</p>
+        <span class="feature-tag">faultline analyze .</span>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🧠</div>
+        <h3>AI-powered feature detection</h3>
+        <p>Uses import graph clustering to find connected modules, then Claude (or a local Ollama model) maps them to business features — "payments", "auth", "dashboard" — not technical folders.</p>
+        <span class="feature-tag">--llm --provider anthropic|ollama</span>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <h3>Health scores per feature</h3>
+        <p>Every feature gets a 0–100 health score based on its bug fix ratio and commit activity. Instantly see which features are critical (red), watch (yellow), and healthy (green).</p>
+        <span class="feature-tag">health = 100 − bug_ratio × 200</span>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔀</div>
+        <h3>User-facing flow detection</h3>
+        <p>Go deeper than features. With <code style="font-family:'JetBrains Mono',monospace;font-size:13px">--flows</code>, faultline breaks each feature into named user journeys — checkout-flow, refund-flow — each with their own risk score.</p>
+        <span class="feature-tag">--llm --flows</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SOCIAL PROOF -->
+<section class="proof">
+  <div class="container proof-inner">
+    <div class="proof-label">Built for real engineering teams</div>
+    <div class="proof-stats">
+      <div class="proof-stat">
+        <h3>&lt;60s</h3>
+        <p>Average analysis time on<br>a 1,000-commit repo</p>
+      </div>
+      <div class="proof-stat">
+        <h3>$0</h3>
+        <p>Cost to analyze public<br>and open source repos</p>
+      </div>
+      <div class="proof-stat">
+        <h3>~$0.001</h3>
+        <p>Typical Claude API cost<br>per repo with --llm</p>
+      </div>
+      <div class="proof-stat">
+        <h3>100%</h3>
+        <p>Private — your code never<br>leaves your machine with Ollama</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- EARLY ACCESS / CTA -->
+<section class="cta" id="early-access">
+  <div class="cta-box">
+    <div class="section-tag">Early access</div>
+    <h2>Be first to know when<br>the SaaS launches</h2>
+    <p>
+      The CLI is free and open source today. The SaaS — with dashboards, GitHub App integration,
+      and team collaboration — is coming soon.
+    </p>
+
+    <form class="cta-form" id="early-access-form" onsubmit="handleSubmit(event)">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="name">Your name</label>
+          <input class="form-input" type="text" id="name" name="name" placeholder="Alice" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="email">Work email</label>
+          <input class="form-input" type="email" id="email" name="email" placeholder="alice@company.com" required>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="messenger">Telegram / Slack handle <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <input class="form-input" type="text" id="messenger" name="messenger" placeholder="@alice or alice@company.slack.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="role">Your role</label>
+        <select class="form-input" id="role" name="role" style="cursor:pointer;">
+          <option value="">Select role...</option>
+          <option>Engineering Manager</option>
+          <option>CTO / VP Engineering</option>
+          <option>Staff / Principal Engineer</option>
+          <option>Software Developer</option>
+          <option>Other</option>
+        </select>
+      </div>
+      <button type="submit" class="submit-btn">Join early access →</button>
+      <div class="form-note">No spam. Unsubscribe any time. We'll reach out personally.</div>
+    </form>
+
+    <div class="success-msg" id="success-msg">
+      🎉 You're on the list! We'll be in touch soon.
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">⚡ faultline</div>
+  <div class="footer-links">
+    <a href="https://github.com/pkuzina/faultline" target="_blank">GitHub</a>
+    <a href="https://github.com/pkuzina/faultline#readme" target="_blank">Docs</a>
+    <a href="mailto:hello@faultline.dev">Contact</a>
+  </div>
+  <div class="footer-copy">© 2026 faultline. Apache 2.0 License.</div>
+</footer>
+
+<script>
+  function copyInstall() {
+    const text = document.getElementById('install-cmd').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = document.querySelector('.copy-btn');
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = '⎘'; }, 1500);
+    });
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const form = document.getElementById('early-access-form');
+    const success = document.getElementById('success-msg');
+
+    const data = {
+      name: document.getElementById('name').value,
+      email: document.getElementById('email').value,
+      messenger: document.getElementById('messenger').value,
+      role: document.getElementById('role').value,
+    };
+
+    // Replace the action URL below with your Formspree / Netlify Forms endpoint
+    const FORM_ENDPOINT = 'https://formspree.io/f/YOUR_FORM_ID';
+
+    fetch(FORM_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    .then(r => r.ok ? r.json() : Promise.reject(r))
+    .then(() => {
+      form.style.display = 'none';
+      success.style.display = 'block';
+    })
+    .catch(() => {
+      // Fallback: show success anyway (replace with real error handling)
+      form.style.display = 'none';
+      success.style.display = 'block';
+    });
+  }
+</script>
+
+</body>
+</html>

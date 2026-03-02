@@ -101,8 +101,8 @@ Recommended for private repositories.
 brew install ollama        # macOS
 # or: curl -fsSL https://ollama.com/install.sh | sh
 
-# 2. Pull a model (one time, ~4.7 GB)
-ollama pull qwen2.5-coder:7b
+# 2. Pull the recommended model (one time, ~4.7 GB)
+ollama pull llama3.1:8b
 
 # 3. Start the server
 ollama serve
@@ -114,9 +114,21 @@ pip install -e '.[ollama]'
 faultline analyze . --llm --provider ollama --src src/
 ```
 
-Use a lighter model if RAM is limited:
+### Recommended models
+
+| Model | Size | Semantic quality | Notes |
+|-------|------|-----------------|-------|
+| `llama3.1:8b` | 4.7 GB | ★★★★★ | **Default — best balance of quality and size** |
+| `mistral-nemo:12b` | 7.1 GB | ★★★★★ | Best overall quality, higher RAM requirement |
+| `qwen2.5:7b` | 4.7 GB | ★★★★ | Good alternative |
+| `llama3.2:3b` | 2.0 GB | ★★★ | Use when RAM is limited |
 
 ```bash
+# Best quality (requires ~8 GB RAM)
+ollama pull mistral-nemo:12b
+faultline analyze . --llm --provider ollama --model mistral-nemo:12b
+
+# Lightweight option
 ollama pull llama3.2:3b
 faultline analyze . --llm --provider ollama --model llama3.2:3b
 ```

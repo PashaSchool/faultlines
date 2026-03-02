@@ -47,7 +47,7 @@ def analyze(
     llm: bool = typer.Option(
         False,
         "--llm",
-        help="Use an LLM to semantically detect features from the file tree",
+        help="Use an LLM to assign semantic names to detected features (results are cached)",
         is_flag=True,
     ),
     provider: str = typer.Option(
@@ -58,7 +58,12 @@ def analyze(
     model: Optional[str] = typer.Option(
         None,
         "--model",
-        help="Model name override (default: claude-haiku-4-5 for anthropic, qwen2.5-coder:7b for ollama)",
+        help=(
+            "Model name override. "
+            "Anthropic default: claude-haiku-4-5. "
+            "Ollama default: llama3.1:8b (recommended). "
+            "Other Ollama options: mistral-nemo:12b (best quality), qwen2.5:7b."
+        ),
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -144,19 +149,31 @@ def analyze(
         # Strip --src prefix so LLM/heuristic sees clean relative paths (e.g. EDR/... not src/views/EDR/...)
         analysis_files, path_prefix = _strip_src_prefix(files, src)
 
-        # Extract AST signatures when --llm is set (reused for feature anchors + flows)
-        signatures: dict = {}
-        if llm:
-            from faultline.analyzer.ast_extractor import extract_signatures
-            extract_root = str(Path(str(repo.working_tree_dir)) / path_prefix) if path_prefix else str(repo.working_tree_dir)
-            signatures = extract_signatures(analysis_files, extract_root)
-            if signatures:
-                console.print(f"[dim]Extracted signatures from {len(signatures)} TS/JS files[/dim]")
+        # Always extract AST signatures — needed for import graph clustering
+        # and reused for flow detection when --flows is set.
+        from faultline.analyzer.ast_extractor import extract_signatures
+        extract_root = str(Path(str(repo.working_tree_dir)) / path_prefix) if path_prefix else str(repo.working_tree_dir)
+        signatures = extract_signatures(analysis_files, extract_root)
+        if signatures:
+            console.print(f"[dim]Extracted signatures from {len(signatures)} TS/JS files[/dim]")
 
-        if llm:
-            raw_mapping = _detect_with_llm(analysis_files, provider, api_key, model, ollama_url, commits=commits, path_prefix=path_prefix, signatures=signatures)
+        # Step 1 — Import graph clustering (primary, always deterministic)
+        # Files connected through import chains form the same cluster.
+        if signatures:
+            from faultline.analyzer.import_graph import build_import_clusters
+            raw_mapping = build_import_clusters(analysis_files, signatures)
+            console.print(
+                f"[dim]Import graph: {len(signatures)} files → {len(raw_mapping)} clusters[/dim]"
+            )
         else:
+            console.print("[dim]No TS/JS files — using directory heuristic[/dim]")
             raw_mapping = detect_features_from_structure(analysis_files)
+
+        # Step 2 — LLM: merge related clusters into business features + name them (optional, cached)
+        if llm:
+            raw_mapping = _merge_and_name_with_llm(
+                raw_mapping, provider, api_key, model, ollama_url, commits=commits
+            )
 
         # Restore full paths so commit matching works against git history
         if path_prefix:
@@ -181,7 +198,13 @@ def analyze(
         # 6b. Detect flows within each feature (optional)
         if flows:
             from faultline.analyzer.coverage import read_coverage
+            from faultline.llm.flow_detector import detect_e2e_anchors
             coverage_data = read_coverage(str(repo.working_tree_dir))
+            e2e_anchors = detect_e2e_anchors(analysis_files)
+            if e2e_anchors:
+                console.print(
+                    f"[dim]E2E anchors: {len(e2e_anchors)} flows detected from test files[/dim]"
+                )
             feature_map = _detect_flows(
                 feature_map=feature_map,
                 repo_path=str(repo.working_tree_dir),
@@ -195,6 +218,7 @@ def analyze(
                 signatures=signatures,
                 remote_url=remote_url,
                 coverage_data=coverage_data,
+                e2e_anchors=e2e_anchors,
             )
 
         # 7. Print the report
@@ -258,39 +282,45 @@ def _validate_llm_access(
         console.print(f"[green]✓[/green] Ollama ready ({resolved_model})")
 
 
-def _detect_with_llm(
-    files: list[str],
+def _merge_and_name_with_llm(
+    cluster_mapping: dict[str, list[str]],
     provider: str,
     api_key: str | None,
     model: str | None,
     ollama_url: str,
-    commits: list | None = None,
-    path_prefix: str = "",
-    signatures: dict | None = None,
+    commits=None,
 ) -> dict[str, list[str]]:
-    """Runs LLM feature detection with the chosen provider. Falls back to heuristic on failure."""
+    """Merges import-graph clusters into business features and names them.
+
+    Unlike simple naming, the LLM can merge N clusters → M features (M ≤ N),
+    grouping clusters that serve the same business purpose even when they
+    don't share direct import connections (e.g. a Redux slice + its page component).
+
+    When commits are provided, top commit message keywords per cluster are injected
+    into the prompt as semantic naming hints.
+
+    Results are cached by cluster structure hash — same codebase → same output.
+    Falls back to the original cluster_mapping on any LLM error.
+    """
     if provider == "anthropic":
-        from faultline.llm.detector import detect_features_llm
-        console.print("[blue]Mapping features with Claude...[/blue]")
-        feature_paths = detect_features_llm(files, api_key=api_key, commits=commits, path_prefix=path_prefix, signatures=signatures)
+        from faultline.llm.detector import merge_and_name_clusters_llm
+        console.print("[blue]Merging & naming features with Claude...[/blue]")
+        named = merge_and_name_clusters_llm(cluster_mapping, api_key=api_key, commits=commits)
 
     elif provider == "ollama":
-        from faultline.llm.detector import detect_features_ollama, _DEFAULT_OLLAMA_MODEL
+        from faultline.llm.detector import merge_and_name_clusters_ollama, _DEFAULT_OLLAMA_MODEL
         resolved_model = model or _DEFAULT_OLLAMA_MODEL
-        console.print(f"[blue]Mapping features with Ollama ({resolved_model})...[/blue]")
-        feature_paths = detect_features_ollama(files, model=resolved_model, host=ollama_url, commits=commits, path_prefix=path_prefix, signatures=signatures)
+        console.print(f"[blue]Merging & naming features with Ollama ({resolved_model})...[/blue]")
+        named = merge_and_name_clusters_ollama(
+            cluster_mapping, model=resolved_model, host=ollama_url, commits=commits
+        )
 
     else:
-        feature_paths = {}
+        named = cluster_mapping
 
-    if feature_paths:
-        label = "Claude" if provider == "anthropic" else "Ollama"
-        console.print(f"[green]✓[/green] {label} mapped {len(feature_paths)} features")
-    else:
-        console.print("[yellow]⚠ LLM detection failed — using heuristic fallback[/yellow]")
-        feature_paths = detect_features_from_structure(files)
-
-    return feature_paths
+    label = "Claude" if provider == "anthropic" else "Ollama"
+    console.print(f"[green]✓[/green] {label} merged → {len(named)} features")
+    return named
 
 
 def _detect_flows(
@@ -306,6 +336,7 @@ def _detect_flows(
     signatures: dict | None = None,
     remote_url: str = "",
     coverage_data: dict | None = None,
+    e2e_anchors: dict | None = None,
 ):
     """
     Runs flow detection for each feature and attaches Flow objects to the FeatureMap.
@@ -344,6 +375,14 @@ def _detect_flows(
             updated_features.append(feature)
             continue
 
+        # Filter e2e anchors to only those relevant to this feature's files
+        feature_file_set = set(analysis_feature_files)
+        feature_e2e = {
+            flow_name: [f for f in files if f in feature_file_set]
+            for flow_name, files in (e2e_anchors or {}).items()
+        }
+        feature_e2e = {k: v for k, v in feature_e2e.items() if v}
+
         # Detect flows for this feature
         if provider == "anthropic":
             flow_mappings = detect_flows_llm(
@@ -351,6 +390,7 @@ def _detect_flows(
                 feature_files=analysis_feature_files,
                 signatures=signatures,
                 api_key=api_key,
+                e2e_anchors=feature_e2e or None,
             )
         else:
             resolved_model = model or _OLLAMA_MODEL
@@ -360,6 +400,7 @@ def _detect_flows(
                 signatures=signatures,
                 model=resolved_model,
                 host=ollama_url,
+                e2e_anchors=feature_e2e or None,
             )
 
         if not flow_mappings:
