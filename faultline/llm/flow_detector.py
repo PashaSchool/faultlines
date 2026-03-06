@@ -369,7 +369,7 @@ def _build_signatures_text(
     Formats file signatures as a compact text block for the LLM prompt.
     For large features (>_SIGNATURE_TRIM_THRESHOLD), imports are omitted.
     """
-    trim_imports = len(feature_files) > _SIGNATURE_TRIM_THRESHOLD
+    large_feature = len(feature_files) > _SIGNATURE_TRIM_THRESHOLD
     lines: list[str] = []
 
     for path in feature_files:
@@ -383,8 +383,14 @@ def _build_signatures_text(
             parts.append(f"exports: {', '.join(sig.exports[:8])}")
         if sig.routes:
             parts.append(f"routes: {', '.join(sig.routes[:5])}")
-        if not trim_imports and sig.imports:
-            parts.append(f"imports: {', '.join(sig.imports[:5])}")
+        if sig.imports:
+            if large_feature:
+                # Keep only relative imports (flow-critical: who calls whom)
+                internal = [i for i in sig.imports if i.startswith(".")]
+                if internal:
+                    parts.append(f"imports: {', '.join(internal[:5])}")
+            else:
+                parts.append(f"imports: {', '.join(sig.imports[:5])}")
 
         if parts:
             lines.append(f"  {path} → {' | '.join(parts)}")
