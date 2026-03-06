@@ -188,6 +188,16 @@ def build_feature_map(
 ) -> FeatureMap:
     """Builds a FeatureMap by joining commits with detected features."""
 
+    # Build file→feature index for O(1) lookup + dir-based fallback for deleted/renamed files
+    file_to_feature: dict[str, str] = {}
+    dir_to_feature: dict[str, str] = {}
+    for feature_name, paths in feature_paths.items():
+        for p in paths:
+            file_to_feature[p] = feature_name
+            parent = str(Path(p).parent)
+            if parent != ".":
+                dir_to_feature.setdefault(parent, feature_name)
+
     feature_commits: dict[str, list[Commit]] = defaultdict(list)
     feature_authors: dict[str, set[str]] = defaultdict(set)
     feature_last_modified: dict[str, datetime] = {}
@@ -196,11 +206,13 @@ def build_feature_map(
         touched_features = set()
 
         for file_path in commit.files_changed:
-            # Find which feature this file belongs to
-            for feature_name, paths in feature_paths.items():
-                if file_path in paths:
-                    touched_features.add(feature_name)
-                    break
+            feat = file_to_feature.get(file_path)
+            if not feat:
+                # Fallback: match by directory (catches deleted/renamed files)
+                parent = str(Path(file_path).parent)
+                feat = dir_to_feature.get(parent)
+            if feat:
+                touched_features.add(feat)
 
         for feature_name in touched_features:
             feature_commits[feature_name].append(commit)
@@ -259,6 +271,16 @@ def build_flows_metrics(
     Returns:
         List of Flow objects with health scores and bug fix metrics.
     """
+    # Build file→flow index for O(1) lookup + dir-based fallback
+    file_to_flow: dict[str, str] = {}
+    dir_to_flow: dict[str, str] = {}
+    for flow_name, paths in flow_file_mappings.items():
+        for p in paths:
+            file_to_flow[p] = flow_name
+            parent = str(Path(p).parent)
+            if parent != ".":
+                dir_to_flow.setdefault(parent, flow_name)
+
     flow_commits: dict[str, list[Commit]] = defaultdict(list)
     flow_authors: dict[str, set[str]] = defaultdict(set)
     flow_last_modified: dict[str, datetime] = {}
@@ -266,10 +288,12 @@ def build_flows_metrics(
     for commit in commits:
         touched_flows: set[str] = set()
         for file_path in commit.files_changed:
-            for flow_name, paths in flow_file_mappings.items():
-                if file_path in paths:
-                    touched_flows.add(flow_name)
-                    break
+            flow = file_to_flow.get(file_path)
+            if not flow:
+                parent = str(Path(file_path).parent)
+                flow = dir_to_flow.get(parent)
+            if flow:
+                touched_flows.add(flow)
         for flow_name in touched_flows:
             flow_commits[flow_name].append(commit)
             flow_authors[flow_name].add(commit.author)
