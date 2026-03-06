@@ -100,11 +100,19 @@ def test_python_file_returns_empty_signature():
     assert sig.is_empty()
 
 
-def test_non_ts_file_skipped_by_extract_signatures(tmp_path):
+def test_non_supported_file_skipped_by_extract_signatures(tmp_path):
+    rs_file = tmp_path / "auth.rs"
+    rs_file.write_text("fn login() {}")
+    result = extract_signatures(["auth.rs"], str(tmp_path))
+    assert "auth.rs" not in result
+
+
+def test_python_file_included_by_extract_signatures(tmp_path):
     py_file = tmp_path / "auth.py"
     py_file.write_text("def login(): pass")
     result = extract_signatures(["auth.py"], str(tmp_path))
-    assert "auth.py" not in result
+    assert "auth.py" in result
+    assert "login" in result["auth.py"].exports
 
 
 def test_extract_signatures_reads_real_file(tmp_path):

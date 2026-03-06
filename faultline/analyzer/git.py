@@ -19,9 +19,22 @@ BUG_FIX_PATTERNS = [
     r"\bfix\b", r"\bbug\b", r"\bhotfix\b", r"\bpatch\b",
     r"\brevert\b", r"\bregression\b", r"\bcrash\b", r"\berror\b",
     r"\bbroken\b", r"\bissue\b", r"\bdefect\b",
+    r"\bresolve\b", r"\btimeout\b", r"\bnull\s*(?:pointer|check|ref)\b",
+    r"\bundefined\b", r"\bNaN\b", r"\brace\s*condition\b",
+    r"\bdeadlock\b", r"\bmemory\s*leak\b", r"\boverflow\b",
 ]
 
 BUG_FIX_REGEX = re.compile("|".join(BUG_FIX_PATTERNS), re.IGNORECASE)
+
+# Patterns that indicate a "fix" commit is NOT a real bug fix
+_FALSE_POSITIVE_PATTERNS = [
+    r"\bfix\s+(?:typo|lint|format\w*|style|import|indent|spacing|whitespace)\b",
+    r"\bfix\s+(?:test|spec|mock|snapshot)\b",
+    r"\bfix\s+(?:docs?|readme|comment|changelog)\b",
+    r"\bfix\s+(?:merge|conflict|rebase)\b",
+    r"\bfix\s+(?:ci|pipeline|build|deploy)\b",
+]
+_FALSE_POSITIVE_REGEX = re.compile("|".join(_FALSE_POSITIVE_PATTERNS), re.IGNORECASE)
 
 # Approximate seconds per commit based on profiling (git stats I/O)
 _SECONDS_PER_COMMIT = 0.008
@@ -33,7 +46,12 @@ DEFAULT_MAX_COMMITS = 5_000
 
 
 def is_bug_fix(message: str) -> bool:
-    return bool(BUG_FIX_REGEX.search(message))
+    if not BUG_FIX_REGEX.search(message):
+        return False
+    # Exclude false positives: "fix typo", "fix lint", "fix test", etc.
+    if _FALSE_POSITIVE_REGEX.search(message):
+        return False
+    return True
 
 
 def extract_pr_number(message: str) -> int | None:
@@ -66,9 +84,22 @@ def get_remote_url(repo: Repo) -> str:
 
 def load_repo(path: str) -> Repo:
     try:
-        return Repo(path, search_parent_directories=True)
+        repo = Repo(path, search_parent_directories=True)
     except InvalidGitRepositoryError:
         raise ValueError(f"'{path}' is not a git repository")
+
+    if repo.head.is_detached:
+        return repo
+
+    try:
+        repo.head.commit
+    except ValueError:
+        raise ValueError(
+            f"Repository at '{path}' has no commits yet. "
+            "Make at least one commit before running analysis."
+        )
+
+    return repo
 
 
 def estimate_commits(repo: Repo, days: int, max_commits: int = DEFAULT_MAX_COMMITS) -> int:

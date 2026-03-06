@@ -146,7 +146,8 @@ def test_collapses_to_dirs_for_large_repos(mock_cls):
 
     # Should send directories (feature_0, feature_1, ...) not 600 individual files
     assert len(sent_lines) < len(all_files), "Should collapse to dirs, not send all files"
-    assert any(line.startswith("feature_") and "component_" not in line for line in sent_lines)
+    # Dir-collapse format: "  feature_0 → component_0.tsx, component_1.tsx, ..."
+    assert any("feature_0" in line and "→" in line for line in sent_lines)
 
 
 @patch("faultline.llm.detector.anthropic.Anthropic")

@@ -90,16 +90,17 @@ def test_signatures_text_shows_placeholder_for_missing_sig():
 
 
 def test_signatures_text_trims_imports_for_large_features():
-    """Features with >30 files should omit imports from the prompt."""
+    """Features with >30 files should keep relative imports but drop external ones."""
     files = [f"file_{i}.ts" for i in range(35)]
     sigs = {
         "file_0.ts": make_signature("file_0.ts", exports=["Foo"]),
     }
-    # Add imports to the signature
-    sigs["file_0.ts"].imports = ["./bar"]
+    # Relative import (kept) + external import (dropped)
+    sigs["file_0.ts"].imports = ["./bar", "lodash"]
 
     text = _build_signatures_text(files, sigs)
-    assert "bar" not in text     # imports trimmed for large features
+    assert "./bar" in text        # relative imports kept (flow-critical)
+    assert "lodash" not in text   # external imports dropped for large features
 
 
 # ---------------------------------------------------------------------------

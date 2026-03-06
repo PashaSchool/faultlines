@@ -1,12 +1,19 @@
 import hashlib
 import json
+import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
 import anthropic
 from pydantic import BaseModel, ValidationError
+
+logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # seconds, doubles each attempt
 
 from faultline.analyzer.ast_extractor import FileSignature
 from faultline.models.types import Commit, Feature
@@ -270,26 +277,32 @@ def _call_feature_detection(
     """Calls Claude API for feature detection (file-path mode). Returns None on any failure."""
     prompt = _DETECTION_USER_PROMPT.format(file_tree=file_tree, extra_context=extra_context)
 
-    try:
-        response = client.messages.parse(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS_FILE,
-            temperature=0,
-            system=_DETECTION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=_FeatureDetectionResponse,
-        )
-        return response.parsed_output
-    except (
-        anthropic.AuthenticationError,
-        anthropic.PermissionDeniedError,
-        anthropic.NotFoundError,
-        anthropic.RateLimitError,
-        anthropic.APIStatusError,
-        anthropic.APIConnectionError,
-        ValidationError,
-    ):
-        return None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.messages.parse(
+                model=_MODEL,
+                max_tokens=_MAX_TOKENS_FILE,
+                temperature=0,
+                system=_DETECTION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+                output_format=_FeatureDetectionResponse,
+            )
+            return response.parsed_output
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError) as e:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning("LLM call failed (attempt %d/%d): %s. Retrying in %.1fs...", attempt + 1, _MAX_RETRIES, e, delay)
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(delay)
+        except (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.NotFoundError,
+            ValidationError,
+        ):
+            return None
+        except anthropic.APIStatusError:
+            return None
+    return None
 
 
 def _call_dir_detection(
@@ -310,26 +323,32 @@ def _call_dir_detection(
         extra_context=extra_context,
     )
 
-    try:
-        response = client.messages.parse(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS_DIR,
-            temperature=0,
-            system=_DIR_DETECTION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=_FeatureDetectionResponse,
-        )
-        return response.parsed_output
-    except (
-        anthropic.AuthenticationError,
-        anthropic.PermissionDeniedError,
-        anthropic.NotFoundError,
-        anthropic.RateLimitError,
-        anthropic.APIStatusError,
-        anthropic.APIConnectionError,
-        ValidationError,
-    ):
-        return None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.messages.parse(
+                model=_MODEL,
+                max_tokens=_MAX_TOKENS_DIR,
+                temperature=0,
+                system=_DIR_DETECTION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+                output_format=_FeatureDetectionResponse,
+            )
+            return response.parsed_output
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError) as e:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning("LLM dir-detection failed (attempt %d/%d): %s. Retrying in %.1fs...", attempt + 1, _MAX_RETRIES, e, delay)
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(delay)
+        except (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.NotFoundError,
+            ValidationError,
+        ):
+            return None
+        except anthropic.APIStatusError:
+            return None
+    return None
 
 
 def _build_feature_dict(
@@ -962,26 +981,32 @@ def _call_cluster_merge(
         clusters=_format_clusters_for_merge_prompt(cluster_mapping, keywords_per_cluster),
         feature_hint=_merge_feature_count_hint(len(cluster_mapping)),
     )
-    try:
-        response = client.messages.parse(
-            model=_MODEL,
-            max_tokens=2048,
-            temperature=0,
-            system=_MERGE_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=_ClusterMergeResponse,
-        )
-        return response.parsed_output
-    except (
-        anthropic.AuthenticationError,
-        anthropic.PermissionDeniedError,
-        anthropic.NotFoundError,
-        anthropic.RateLimitError,
-        anthropic.APIStatusError,
-        anthropic.APIConnectionError,
-        ValidationError,
-    ):
-        return None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.messages.parse(
+                model=_MODEL,
+                max_tokens=2048,
+                temperature=0,
+                system=_MERGE_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+                output_format=_ClusterMergeResponse,
+            )
+            return response.parsed_output
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError) as e:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning("LLM cluster merge failed (attempt %d/%d): %s. Retrying in %.1fs...", attempt + 1, _MAX_RETRIES, e, delay)
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(delay)
+        except (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.NotFoundError,
+            ValidationError,
+        ):
+            return None
+        except anthropic.APIStatusError:
+            return None
+    return None
 
 
 def merge_and_name_clusters_llm(

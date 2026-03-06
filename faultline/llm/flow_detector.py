@@ -9,12 +9,20 @@ A "flow" is richer than a feature:
   - Feature: "payments"  (business domain)
   - Flows:   "checkout-flow", "refund-flow", "subscription-flow"
 """
+import logging
 import os
 import re
+import time
+from collections import defaultdict
 from pathlib import Path
 
 import anthropic
 from pydantic import BaseModel, ValidationError
+
+logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0
 
 from faultline.analyzer.ast_extractor import FileSignature
 
@@ -70,6 +78,10 @@ Examples:
    authoritative names for this feature's flows — they were written by humans \
    describing real user journeys. Prefer these names over invented ones and \
    assign files accordingly.
+7. If a <co-changes> section is provided, files that change together frequently \
+   are a strong signal they belong to the same flow.
+8. If a file has API routes (GET/POST/PUT/DELETE), it is an entry point to a flow. \
+   Group other files that serve the same route prefix into the same flow.
 """
 
 _FLOW_USER_PROMPT = """\
@@ -77,7 +89,7 @@ Feature: {feature_name}
 {e2e_context}
 Files and their signatures:
 {signatures_text}
-
+{extra_context}
 Identify the distinct user-facing flows within the "{feature_name}" feature.
 Assign every file to exactly one flow.
 """
@@ -151,6 +163,63 @@ def _format_e2e_anchors(e2e_anchors: dict[str, list[str]]) -> str:
     )
 
 
+_MAX_FLOW_COCHANGE_PAIRS = 10
+_MAX_FLOW_ROUTE_ENTRIES = 10
+
+
+def _build_flow_extra_context(
+    feature_files: list[str],
+    signatures: dict[str, FileSignature],
+    commits: list | None,
+) -> str:
+    """Builds co-change + route hint context for flow detection prompts."""
+    parts: list[str] = []
+
+    # Co-change pairs within this feature
+    if commits:
+        from faultline.analyzer.features import compute_cochange
+        feature_set = set(feature_files)
+        # Filter commits to only those touching this feature's files
+        filtered = [
+            c for c in commits
+            if any(f in feature_set for f in c.files_changed)
+        ]
+        if filtered:
+            pairs = compute_cochange(filtered)
+            # Keep only pairs where both files are in this feature
+            pairs = [(f1, f2, s) for f1, f2, s in pairs if f1 in feature_set and f2 in feature_set]
+            if pairs:
+                lines = [
+                    f"  {f1} ↔ {f2} ({int(s * 100)}%)"
+                    for f1, f2, s in pairs[:_MAX_FLOW_COCHANGE_PAIRS]
+                ]
+                parts.append(
+                    "<co-changes>\n"
+                    "Files changed together frequently — strong signal they belong to the same flow:\n"
+                    + "\n".join(lines)
+                    + "\n</co-changes>"
+                )
+
+    # Route anchors from signatures
+    route_lines: list[str] = []
+    for path in feature_files:
+        sig = signatures.get(path)
+        if sig and sig.routes:
+            routes_str = ", ".join(sig.routes[:3])
+            route_lines.append(f"  {path} → {routes_str}")
+            if len(route_lines) >= _MAX_FLOW_ROUTE_ENTRIES:
+                break
+    if route_lines:
+        parts.append(
+            "<route-anchors>\n"
+            "Files with API routes — each distinct route prefix likely maps to a different flow:\n"
+            + "\n".join(route_lines)
+            + "\n</route-anchors>"
+        )
+
+    return ("\n" + "\n\n".join(parts) + "\n") if parts else ""
+
+
 class _FlowFileMapping(BaseModel):
     flow_name: str
     files: list[str]
@@ -166,6 +235,7 @@ def detect_flows_llm(
     signatures: dict[str, FileSignature],
     api_key: str | None = None,
     e2e_anchors: dict[str, list[str]] | None = None,
+    commits: list | None = None,
 ) -> list[_FlowFileMapping]:
     """
     Detects user-facing flows within a feature using Claude.
@@ -177,6 +247,7 @@ def detect_flows_llm(
         api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
         e2e_anchors: Optional dict of flow_name → [files] from e2e test detection.
             When provided, these flow names are used as authoritative anchors.
+        commits: Optional list of Commit objects for co-change analysis.
 
     Returns:
         List of FlowFileMapping objects, empty on any failure.
@@ -186,7 +257,7 @@ def detect_flows_llm(
         return []
 
     client = anthropic.Anthropic(api_key=key)
-    return _call_flow_detection(client, feature_name, feature_files, signatures, e2e_anchors)
+    return _call_flow_detection(client, feature_name, feature_files, signatures, e2e_anchors, commits)
 
 
 def detect_flows_ollama(
@@ -196,6 +267,7 @@ def detect_flows_ollama(
     model: str = _DEFAULT_OLLAMA_MODEL,
     host: str = _DEFAULT_OLLAMA_HOST,
     e2e_anchors: dict[str, list[str]] | None = None,
+    commits: list | None = None,
 ) -> list[_FlowFileMapping]:
     """
     Detects user-facing flows using a local Ollama model.
@@ -203,6 +275,7 @@ def detect_flows_ollama(
     Args:
         e2e_anchors: Optional dict of flow_name → [files] from e2e test detection.
             When provided, these flow names are used as authoritative anchors.
+        commits: Optional list of Commit objects for co-change analysis.
 
     Returns:
         List of FlowFileMapping objects, empty on any failure.
@@ -217,10 +290,12 @@ def detect_flows_ollama(
 
     signatures_text = _build_signatures_text(feature_files, signatures)
     e2e_context = _format_e2e_anchors(e2e_anchors or {})
+    extra_context = _build_flow_extra_context(feature_files, signatures, commits)
     prompt = _FLOW_USER_PROMPT.format(
         feature_name=feature_name,
         e2e_context=e2e_context,
         signatures_text=signatures_text,
+        extra_context=extra_context,
     )
 
     try:
@@ -245,36 +320,45 @@ def _call_flow_detection(
     feature_files: list[str],
     signatures: dict[str, FileSignature],
     e2e_anchors: dict[str, list[str]] | None = None,
+    commits: list | None = None,
 ) -> list[_FlowFileMapping]:
     """Calls Claude for flow detection. Returns [] on any failure."""
     signatures_text = _build_signatures_text(feature_files, signatures)
     e2e_context = _format_e2e_anchors(e2e_anchors or {})
+    extra_context = _build_flow_extra_context(feature_files, signatures, commits)
     prompt = _FLOW_USER_PROMPT.format(
         feature_name=feature_name,
         e2e_context=e2e_context,
         signatures_text=signatures_text,
+        extra_context=extra_context,
     )
 
-    try:
-        response = client.messages.parse(
-            model=_MODEL,
-            max_tokens=2048,
-            temperature=0,
-            system=_FLOW_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=_FlowDetectionResponse,
-        )
-        return _filter_valid_files(response.parsed_output.flows, set(feature_files))
-    except (
-        anthropic.AuthenticationError,
-        anthropic.PermissionDeniedError,
-        anthropic.NotFoundError,
-        anthropic.RateLimitError,
-        anthropic.APIStatusError,
-        anthropic.APIConnectionError,
-        ValidationError,
-    ):
-        return []
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.messages.parse(
+                model=_MODEL,
+                max_tokens=2048,
+                temperature=0,
+                system=_FLOW_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+                output_format=_FlowDetectionResponse,
+            )
+            return _filter_valid_files(response.parsed_output.flows, set(feature_files))
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError) as e:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning("Flow detection failed (attempt %d/%d): %s. Retrying in %.1fs...", attempt + 1, _MAX_RETRIES, e, delay)
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(delay)
+        except (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.NotFoundError,
+            ValidationError,
+        ):
+            return []
+        except anthropic.APIStatusError:
+            return []
+    return []
 
 
 def _build_signatures_text(
@@ -285,7 +369,7 @@ def _build_signatures_text(
     Formats file signatures as a compact text block for the LLM prompt.
     For large features (>_SIGNATURE_TRIM_THRESHOLD), imports are omitted.
     """
-    trim_imports = len(feature_files) > _SIGNATURE_TRIM_THRESHOLD
+    large_feature = len(feature_files) > _SIGNATURE_TRIM_THRESHOLD
     lines: list[str] = []
 
     for path in feature_files:
@@ -299,8 +383,14 @@ def _build_signatures_text(
             parts.append(f"exports: {', '.join(sig.exports[:8])}")
         if sig.routes:
             parts.append(f"routes: {', '.join(sig.routes[:5])}")
-        if not trim_imports and sig.imports:
-            parts.append(f"imports: {', '.join(sig.imports[:5])}")
+        if sig.imports:
+            if large_feature:
+                # Keep only relative imports (flow-critical: who calls whom)
+                internal = [i for i in sig.imports if i.startswith(".")]
+                if internal:
+                    parts.append(f"imports: {', '.join(internal[:5])}")
+            else:
+                parts.append(f"imports: {', '.join(sig.imports[:5])}")
 
         if parts:
             lines.append(f"  {path} → {' | '.join(parts)}")
@@ -314,10 +404,41 @@ def _filter_valid_files(
     flows: list[_FlowFileMapping],
     allowed_files: set[str],
 ) -> list[_FlowFileMapping]:
-    """Removes hallucinated file paths and flows with no valid files."""
-    result = []
+    """Removes hallucinated files, deduplicates, and assigns unassigned files."""
+    assigned: set[str] = set()
+    result: list[_FlowFileMapping] = []
+
+    # Pass 1: validate and deduplicate
     for flow in flows:
-        valid = [f for f in flow.files if f in allowed_files]
+        valid = [f for f in flow.files if f in allowed_files and f not in assigned]
         if valid:
+            assigned.update(valid)
             result.append(_FlowFileMapping(flow_name=flow.flow_name, files=valid))
+
+    # Pass 2: assign unassigned files to closest flow by directory overlap
+    unassigned = allowed_files - assigned
+    if unassigned and result:
+        # Build dir→flow index from existing assignments
+        flow_dirs: dict[str, int] = {}
+        for i, flow in enumerate(result):
+            for f in flow.files:
+                parent = str(Path(f).parent)
+                flow_dirs.setdefault(parent, i)
+
+        extra: dict[int, list[str]] = defaultdict(list)
+        for f in sorted(unassigned):
+            parent = str(Path(f).parent)
+            if parent in flow_dirs:
+                extra[flow_dirs[parent]].append(f)
+            else:
+                # No directory match — assign to the largest flow
+                largest_idx = max(range(len(result)), key=lambda i: len(result[i].files))
+                extra[largest_idx].append(f)
+
+        for i, files in extra.items():
+            result[i] = _FlowFileMapping(
+                flow_name=result[i].flow_name,
+                files=result[i].files + files,
+            )
+
     return result

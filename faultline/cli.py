@@ -115,6 +115,17 @@ def analyze(
         console.print(f"[red]Unknown provider '{provider}'. Use: anthropic or ollama[/red]")
         raise typer.Exit(1)
 
+    if llm and provider == "ollama":
+        try:
+            import ollama as _ollama  # noqa: F401
+        except ImportError:
+            console.print(
+                "[red]Ollama package not installed.[/red]\n"
+                "Install with: [bold]pip install 'faultline[ollama]'[/bold]\n"
+                "Or: [bold]pip install ollama[/bold]"
+            )
+            raise typer.Exit(1)
+
     try:
         # 1. Load the repository
         console.print(f"[blue]Analyzing:[/blue] {repo_path}")
@@ -383,6 +394,13 @@ def _detect_flows(
         }
         feature_e2e = {k: v for k, v in feature_e2e.items() if v}
 
+        # Collect commits touching this feature (for co-change enrichment)
+        feature_commit_files = set(feature.paths)
+        feature_commits = [
+            c for c in commits
+            if any(f in feature_commit_files for f in c.files_changed)
+        ]
+
         # Detect flows for this feature
         if provider == "anthropic":
             flow_mappings = detect_flows_llm(
@@ -391,6 +409,7 @@ def _detect_flows(
                 signatures=signatures,
                 api_key=api_key,
                 e2e_anchors=feature_e2e or None,
+                commits=feature_commits,
             )
         else:
             resolved_model = model or _OLLAMA_MODEL
@@ -401,6 +420,7 @@ def _detect_flows(
                 model=resolved_model,
                 host=ollama_url,
                 e2e_anchors=feature_e2e or None,
+                commits=feature_commits,
             )
 
         if not flow_mappings:
@@ -417,11 +437,6 @@ def _detect_flows(
             flow_file_mappings = {m.flow_name: m.files for m in flow_mappings}
 
         # Build metrics for each flow using the feature's commits
-        feature_commit_files = set(feature.paths)
-        feature_commits = [
-            c for c in commits
-            if any(f in feature_commit_files for f in c.files_changed)
-        ]
         flows = build_flows_metrics(feature_commits, flow_file_mappings, remote_url=remote_url, coverage_data=coverage_data)
         total_flows += len(flows)
 

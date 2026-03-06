@@ -28,10 +28,11 @@ _INDEX_FILES = [f"index{ext}" for ext in _EXTENSIONS_TO_TRY]
 # Alias prefixes treated as internal project imports
 _ALIAS_PREFIXES = ("@/", "~/", "#/")
 
-# A file imported by more than this many distinct files is a "hub" (shared utility,
-# type barrel, design-system export). Hub files are excluded from Union-Find bridges
+# Base hub threshold — files imported by more than this many distinct files are "hubs"
+# (shared utilities, type barrels). Hub files are excluded from Union-Find bridges
 # so they don't merge unrelated features into one giant cluster.
-_MAX_IMPORT_FANIN = 8
+# Scales with codebase size: max(8, file_count // 30).
+_BASE_IMPORT_FANIN = 8
 
 # If a Union-Find cluster grows beyond this fraction of all files, it's a sign that
 # import chains have connected unrelated modules. In that case the cluster is split
@@ -116,9 +117,10 @@ def build_import_clusters(
                 edges.append((rel_path, resolved))
 
     # Phase 2: Union-Find — skip hub files as bridges
+    max_fanin = max(_BASE_IMPORT_FANIN, len(files) // 30)
     uf = _UnionFind(files)
     for importer, imported in edges:
-        if fanin[imported] <= _MAX_IMPORT_FANIN:
+        if fanin[imported] <= max_fanin:
             uf.union(importer, imported)
 
     raw_groups = uf.groups()
