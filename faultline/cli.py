@@ -401,7 +401,7 @@ def analyze(
                     if provider == "ollama":
                         pkg_mapping = detect_features_ollama(
                             pkg_files, model=model or "llama3.1:8b",
-                            ollama_url=ollama_url, path_prefix="",
+                            host=ollama_url, path_prefix="",
                             signatures=pkg_sigs or None,
                         )
                     else:
