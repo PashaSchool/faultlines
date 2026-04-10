@@ -7,7 +7,7 @@ Point `faultlines` at a git repo and get back a feature map — which parts of y
 [![PyPI](https://img.shields.io/pypi/v/faultlines)](https://pypi.org/project/faultlines/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/faultlines)](https://pypi.org/project/faultlines/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/PashaSchool/featuremap)](https://github.com/PashaSchool/featuremap)
+[![GitHub stars](https://img.shields.io/github/stars/PashaSchool/faultlines)](https://github.com/PashaSchool/faultlines)
 
 ## Try it in 30 seconds
 
@@ -42,7 +42,8 @@ That's it. You'll see something like:
 2. **Clusters files into features** — using Claude Sonnet (or local Ollama) to group by business domain, not folder names
 3. **Scores each feature** — by bug-fix density, churn, bus factor, and age-weighted trends
 4. **Detects user flows** — with `--flows`, breaks features into end-to-end user journeys (`checkout-flow`, `signup-flow`, `manage-team-flow`)
-5. **Outputs JSON** — `~/.faultlines/feature-map-*.json`, ready for dashboards or CI
+5. **Maps test coverage per feature** — with `--coverage`, shows which features and flows are well-tested and which are exposed
+6. **Outputs JSON** — `~/.faultlines/feature-map-*.json`, ready for dashboards or CI
 
 ### Without LLM vs with LLM
 
@@ -65,7 +66,7 @@ Every number below is from a real `faultlines analyze --llm --flows` run. Reprod
 | [outline](https://github.com/outline/outline) | 2,390 | 22 | 188 | 6m | rich-text-editor, api-backend, dashboard, plugins |
 | [documenso](https://github.com/documenso/documenso) | 2,530 | 49 | 191 | 8m | trpc/envelope, remix/document-signing, ee/billing |
 | [formbricks](https://github.com/formbricks/formbricks) | 3,316 | 33 | 136 | 8m | web/survey, web/organization, web/auth |
-| [excalidraw](https://github.com/excalidraw/excalidraw) | 1,225 | 15 | 28 | 4m | excalidraw/shared-ui, excalidraw/data, renderer |
+| [excalidraw](https://github.com/excalidraw/excalidraw) | 1,225 | 15 | 35 | 4m | excalidraw/shared-ui, excalidraw/data, renderer |
 | [trpc](https://github.com/trpc/trpc) | 1,573 | 14 | 37 | 1m | server/core, client/links, openapi, next-adapter |
 | [gin](https://github.com/gin-gonic/gin) | 130 | 22 | — | 15s | binding, render, context, recovery, logger |
 | [fastapi](https://github.com/fastapi/fastapi) | 2,981 | 14 | — | 80s | routing, dependencies, security, openapi, middleware |
@@ -146,6 +147,38 @@ With `--flows`, each feature is broken into user-facing flows — named action s
 
 Flow names and health scores are real — from actual Haiku detection against git commit history.
 
+## Test coverage per feature
+
+With `--coverage`, faultlines reads your existing coverage report and maps it to features and flows:
+
+```bash
+# Python
+coverage run -m pytest && coverage json
+faultlines analyze . --llm --flows --coverage coverage.json
+
+# JS/TS (Jest or Vitest)
+npx jest --coverage
+faultlines analyze . --llm --flows --coverage coverage/coverage-summary.json
+
+# Auto-detect (looks for common coverage files)
+faultlines analyze . --llm --flows --coverage
+```
+
+Supports: Python coverage.py (`.coverage`, `coverage.json`), Cobertura XML, Jest/NYC, LCOV.
+
+```
+╭───┬──────────────────┬────────┬───────┬─────────╮
+│   │ Feature          │ Health │ Bug % │   Cov % │
+├───┼──────────────────┼────────┼───────┼─────────┤
+│ ✗ │ element/arrows   │   13   │  75%  │     50% │
+│ ✗ │ font-management  │   16   │  67%  │     97% │
+│ ! │ excalidraw/data  │   39   │  63%  │     60% │
+│ ✓ │ math             │   69   │  50%  │     91% │
+╰───┴──────────────────┴────────┴───────┴─────────╯
+```
+
+The insight: **element/arrows** has 75% bug ratio and only 50% coverage — the exact spot where adding tests would prevent the most regressions.
+
 ## Output format
 
 Results save to `~/.faultlines/feature-map-{repo}-{timestamp}.json`:
@@ -210,6 +243,7 @@ faultlines analyze [REPO_PATH]
 | `--days` | `365` | Days of git history |
 | `--top` | `3` | Top risk zones to highlight |
 | `--output` | `~/.faultlines/` | Output file path |
+| `--coverage` | auto | Path to coverage report (lcov, jest, cobertura, coverage.py) |
 | `--no-save` | — | Don't save JSON |
 | `--legacy` | — | Use pre-rewrite 5-strategy pipeline |
 | `--ollama-url` | `localhost:11434` | Custom Ollama URL |
@@ -245,7 +279,7 @@ Ollama is free (runs locally). Heuristic mode (no `--llm`) is free and instant.
 
 ## Contributing
 
-Issues, PRs, and feedback welcome at [github.com/PashaSchool/featuremap](https://github.com/PashaSchool/featuremap).
+Issues, PRs, and feedback welcome at [github.com/PashaSchool/faultlines](https://github.com/PashaSchool/faultlines).
 
 ## License
 
