@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from faultline.models.types import SymbolRange
+
 
 _TS_JS_EXTENSIONS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _PYTHON_EXTENSIONS = {".py"}
@@ -57,12 +59,29 @@ _RE_PYTHON_ROUTE = re.compile(
 )
 
 
+# Named import destructuring: import { FOO, BAR as Baz } from './path'
+_RE_NAMED_IMPORT = re.compile(
+    r"import\s*\{([^}]+)\}\s*from\s*['\"]([^'\"]+)['\"]"
+)
+# Namespace import: import * as X from './path'
+_RE_NAMESPACE_IMPORT = re.compile(
+    r"import\s*\*\s*as\s+\w+\s+from\s*['\"]([^'\"]+)['\"]"
+)
+
+# TS type/interface/enum exports
+_RE_TYPE_EXPORT = re.compile(
+    r"export\s+(?:declare\s+)?(?:type|interface|enum)\s+(\w+)"
+)
+
+
 @dataclass
 class FileSignature:
     path: str
     exports: list[str] = field(default_factory=list)
     routes: list[str] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)
+    symbol_ranges: list[SymbolRange] = field(default_factory=list)
+    source: str = field(default="", repr=False)
 
     def is_empty(self) -> bool:
         return not self.exports and not self.routes and not self.imports
@@ -111,6 +130,8 @@ def extract_signatures(
             sig = _parse_python_file(rel_path, source)
         else:
             sig = _parse_file(rel_path, source)
+            sig.symbol_ranges = extract_symbol_ranges(source)
+            sig.source = source
 
         if not sig.is_empty():
             result[rel_path] = sig
@@ -223,3 +244,111 @@ def _infer_nextjs_route_path(rel_path: str) -> str:
         trimmed = trimmed[:-1] + (Path(trimmed[-1]).stem,) if trimmed else trimmed
 
     return "/" + "/".join(trimmed) if trimmed else "/"
+
+
+def extract_symbol_ranges(source: str) -> list[SymbolRange]:
+    """Extracts line ranges for each exported symbol in TS/JS source.
+
+    MVP heuristic: each export's end_line = next export's start_line - 1,
+    or EOF for the last export. This avoids complex brace-balancing but
+    gives reasonable line attribution for most files.
+    """
+    total_lines = source.count("\n") + 1
+    # Collect all export positions with their symbol names and kinds
+    exports: list[tuple[int, str, str]] = []  # (start_line, name, kind)
+
+    for match in _RE_NAMED_EXPORT.finditer(source):
+        line = source[:match.start()].count("\n") + 1
+        name = match.group(1)
+        # Determine kind from the keyword before the name
+        text = source[match.start():match.end()]
+        if "function" in text:
+            kind = "function"
+        elif "class" in text:
+            kind = "class"
+        else:
+            kind = "const"
+        exports.append((line, name, kind))
+
+    for match in _RE_DEFAULT_EXPORT.finditer(source):
+        line = source[:match.start()].count("\n") + 1
+        name = match.group(1)
+        text = source[match.start():match.end()]
+        kind = "class" if "class" in text else "function"
+        exports.append((line, name, kind))
+
+    for match in _RE_TYPE_EXPORT.finditer(source):
+        line = source[:match.start()].count("\n") + 1
+        name = match.group(1)
+        text = source[match.start():match.end()]
+        if "enum" in text:
+            kind = "enum"
+        elif "interface" in text:
+            kind = "type"
+        else:
+            kind = "type"
+        exports.append((line, name, kind))
+
+    for match in _RE_REEXPORT.finditer(source):
+        line = source[:match.start()].count("\n") + 1
+        for token in match.group(1).split(","):
+            parts = token.strip().split(" as ")
+            name = parts[-1].strip()
+            if name:
+                exports.append((line, name, "reexport"))
+
+    if not exports:
+        return []
+
+    # Sort by start_line, deduplicate by name (keep first occurrence)
+    exports.sort(key=lambda x: x[0])
+    seen: set[str] = set()
+    unique: list[tuple[int, str, str]] = []
+    for start, name, kind in exports:
+        if name not in seen:
+            seen.add(name)
+            unique.append((start, name, kind))
+
+    # Assign end_line: next export's start_line - 1, or EOF for last
+    ranges = []
+    for i, (start, name, kind) in enumerate(unique):
+        if i + 1 < len(unique):
+            end = unique[i + 1][0] - 1
+        else:
+            end = total_lines
+        ranges.append(SymbolRange(
+            name=name, start_line=start, end_line=max(start, end), kind=kind,
+        ))
+
+    return ranges
+
+
+def extract_named_imports(source: str) -> dict[str, set[str]]:
+    """Extracts named imports from TS/JS source.
+
+    Returns:
+        Dict mapping module path → set of imported symbol names.
+        For namespace imports (import * as X), returns {"*"} as the symbol set.
+    """
+    result: dict[str, set[str]] = {}
+
+    for match in _RE_NAMED_IMPORT.finditer(source):
+        names_str = match.group(1)
+        module = match.group(2)
+        if not (module.startswith(".") or module.startswith("@/") or module.startswith("~/")):
+            continue
+        names = set()
+        for token in names_str.split(","):
+            parts = token.strip().split(" as ")
+            original = parts[0].strip()
+            if original:
+                names.add(original)
+        if names:
+            result.setdefault(module, set()).update(names)
+
+    for match in _RE_NAMESPACE_IMPORT.finditer(source):
+        module = match.group(1)
+        if module.startswith(".") or module.startswith("@/") or module.startswith("~/"):
+            result.setdefault(module, set()).add("*")
+
+    return result

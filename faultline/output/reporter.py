@@ -54,8 +54,19 @@ def print_features_table(feature_map: FeatureMap) -> None:
         _print_features_with_flows(feature_map)
 
 
+def _coverage_color(pct: float) -> str:
+    if pct >= 70:
+        return "green"
+    elif pct >= 40:
+        return "yellow"
+    else:
+        return "red"
+
+
 def _print_features_flat(feature_map: FeatureMap) -> None:
     """Standard flat table without flows."""
+    has_coverage = any(f.coverage_pct is not None for f in feature_map.features)
+
     table = Table(
         box=box.ROUNDED,
         show_header=True,
@@ -72,22 +83,32 @@ def _print_features_flat(feature_map: FeatureMap) -> None:
     table.add_column("Bug %", justify="right", width=8)
     table.add_column("Authors", justify="right", width=10)
     table.add_column("Files", justify="right", width=8)
+    if has_coverage:
+        table.add_column("Cov %", justify="right", width=8)
 
     for feature in feature_map.sorted_by_risk():
-        color = _health_color(feature.health_score)
-        icon = _health_icon(feature.health_score)
+        display_health = feature.symbol_health_score if feature.symbol_health_score is not None else feature.health_score
+        color = _health_color(display_health)
+        icon = _health_icon(display_health)
         bug_pct = f"{feature.bug_fix_ratio * 100:.1f}%"
 
-        table.add_row(
+        row = [
             f"[{color}]{icon}[/]",
             feature.name,
-            f"[{color}]{feature.health_score:.0f}[/]",
+            f"[{color}]{display_health:.0f}[/]",
             str(feature.total_commits),
             f"[{color}]{feature.bug_fixes}[/]" if feature.bug_fixes > 0 else "0",
             f"[{color}]{bug_pct}[/]",
             str(len(feature.authors)),
             str(len(feature.paths)),
-        )
+        ]
+        if has_coverage:
+            if feature.coverage_pct is not None:
+                cov_color = _coverage_color(feature.coverage_pct)
+                row.append(f"[{cov_color}]{feature.coverage_pct:.0f}%[/]")
+            else:
+                row.append("[dim]—[/dim]")
+        table.add_row(*row)
 
     console.print()
     console.print(table)
@@ -111,15 +132,16 @@ def _print_features_with_flows(feature_map: FeatureMap) -> None:
     table.add_column("Bug %", justify="right", width=8)
 
     for feature in feature_map.sorted_by_risk():
-        f_color = _health_color(feature.health_score)
-        f_icon = _health_icon(feature.health_score)
+        f_display_health = feature.symbol_health_score if feature.symbol_health_score is not None else feature.health_score
+        f_color = _health_color(f_display_health)
+        f_icon = _health_icon(f_display_health)
         f_pct = f"{feature.bug_fix_ratio * 100:.1f}%"
 
         # Feature header row
         table.add_row(
             f"[{f_color}]{f_icon}[/]",
             f"[bold]{feature.name}[/bold]",
-            f"[{f_color} bold]{feature.health_score:.0f}[/]",
+            f"[{f_color} bold]{f_display_health:.0f}[/]",
             f"[bold]{feature.total_commits}[/bold]",
             f"[{f_color} bold]{feature.bug_fixes}[/]" if feature.bug_fixes > 0 else "[bold]0[/bold]",
             f"[{f_color} bold]{f_pct}[/]",
@@ -166,9 +188,58 @@ def print_top_risks(feature_map: FeatureMap, top: int = 3) -> None:
             console.print(f"     [dim]{feature.description}[/dim]")
 
 
-def print_report(feature_map: FeatureMap) -> None:
+def _impact_color(level: str) -> str:
+    if level == "critical":
+        return "red bold"
+    elif level == "high":
+        return "red"
+    elif level == "medium":
+        return "yellow"
+    elif level == "low":
+        return "blue"
+    return "green"
+
+
+def print_impact_scores(scores: list) -> None:
+    """Prints the impact scores table from analytics data."""
+    table = Table(
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold cyan",
+        title="Impact Scores (Analytics)",
+        title_style="bold",
+    )
+
+    table.add_column("Flow", min_width=20)
+    table.add_column("Health", justify="center", width=10)
+    table.add_column("Pageviews", justify="right", width=12)
+    table.add_column("Errors", justify="right", width=10)
+    table.add_column("Score", justify="right", width=8)
+    table.add_column("Impact", justify="center", width=12)
+
+    for s in scores:
+        h_color = _health_color(s.health_score)
+        i_color = _impact_color(s.impact_level)
+        err_color = "red" if s.error_count > 100 else "dim"
+
+        table.add_row(
+            s.flow_name,
+            f"[{h_color}]{s.health_score:.0f}[/]",
+            f"{s.pageviews:,}" if s.pageviews > 0 else "[dim]—[/]",
+            f"[{err_color}]{s.error_count:,}[/]" if s.error_count > 0 else "[dim]—[/]",
+            f"{s.score:.0f}",
+            f"[{i_color}]{s.impact_level.upper()}[/]",
+        )
+
+    console.print()
+    console.print(table)
+
+
+def print_report(feature_map: FeatureMap, impact_scores: list | None = None) -> None:
     """Prints the full terminal report."""
     print_summary(feature_map)
     print_features_table(feature_map)
+    if impact_scores:
+        print_impact_scores(impact_scores)
     print_top_risks(feature_map)
     console.print()

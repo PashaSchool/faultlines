@@ -48,7 +48,19 @@ htmlcov/
 # Hatch
 .hatch/
 
-# Dev dashboard (personal use only)
+# SaaS dashboard (lives in separate private repo: faultlines-app)
+saas-dashboard/
 dashboard/
+
+# Internal mission docs (not for public)
+REWRITE_PLAN.md
+memory/
+
+# Landing page screenshots
+*.png
+*.webp
+
+# Waitlist data
+waitlist.json
 
 

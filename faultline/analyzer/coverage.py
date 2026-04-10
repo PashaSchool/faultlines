@@ -4,19 +4,35 @@ import json
 from pathlib import Path
 
 
-def read_coverage(repo_path: str) -> dict[str, float]:
+def read_coverage(repo_path: str, coverage_path: str | None = None) -> dict[str, float]:
     """
     Returns file_path → line coverage % (0–100).
-    Tries coverage/coverage-summary.json (Jest/NYC) then coverage/lcov.info.
-    Returns empty dict if neither file exists.
+
+    If coverage_path is provided, reads that file directly (lcov or jest format).
+    Otherwise tries coverage/coverage-summary.json (Jest/NYC) then coverage/lcov.info.
+    Returns empty dict if no coverage data found.
     """
+    if coverage_path:
+        p = Path(coverage_path)
+        if not p.exists():
+            return {}
+        if p.name.endswith(".json"):
+            return _read_jest(p)
+        return _read_lcov(p)
+
     root = Path(repo_path)
-    summary = root / "coverage" / "coverage-summary.json"
-    if summary.exists():
-        return _read_jest(summary)
-    lcov = root / "coverage" / "lcov.info"
-    if lcov.exists():
-        return _read_lcov(lcov)
+    # Auto-detect: check common locations
+    candidates = [
+        root / "coverage" / "coverage-summary.json",
+        root / "coverage" / "lcov.info",
+        root / "lcov.info",
+        root / "coverage.lcov",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            if candidate.name.endswith(".json"):
+                return _read_jest(candidate)
+            return _read_lcov(candidate)
     return {}
 
 

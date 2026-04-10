@@ -1,269 +1,177 @@
-# faultline
+# faultlines
 
-> **Map features in any codebase from git history. No Jira required.**
+> **Map features in any codebase from git history alone. No Jira required.**
 
-**faultline** analyses your git commit history to automatically detect features and modules in your codebase, then shows which ones are accumulating the most bug fixes — your technical debt hotspots.
+Point `faultlines` at a git repo and get back a feature map — which parts of your product accumulate the most bug fixes, who owns what, and where the risk is hiding. Works on any language, any size, any repo.
 
-No integrations. No configuration. Just point it at any git repo.
-
-[![PyPI](https://img.shields.io/pypi/v/faultline)](https://pypi.org/project/faultline/)
-[![Python](https://img.shields.io/pypi/pyversions/faultline)](https://pypi.org/project/faultline/)
+[![PyPI](https://img.shields.io/pypi/v/faultlines)](https://pypi.org/project/faultlines/)
+[![Python 3.11+](https://img.shields.io/pypi/pyversions/faultlines)](https://pypi.org/project/faultlines/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/PashaSchool/featuremap)](https://github.com/PashaSchool/featuremap)
 
----
+## Try it in 30 seconds
 
-## Why faultline?
-
-Engineering managers need to know *where* the technical debt is before they can act on it. Most tools require you to tag tickets in Jira or Linear. faultline reads the truth directly from your git history.
-
-```
-✗ payments    — health: 23   38 bug fixes / 112 commits (33.9%)
-!  auth        — health: 54   12 bug fixes / 48 commits  (25.0%)
-✓  dashboard   — health: 91    2 bug fixes / 67 commits   (3.0%)
+```bash
+pip install faultlines
+export ANTHROPIC_API_KEY=sk-ant-...   # or use Ollama for free local analysis
+faultlines analyze .
 ```
 
----
+That's it. You'll see something like:
+
+```
+╭──────────────────────────── FeatureMap Analysis ─────────────────────────────╮
+│ Repository: /home/you/your-project                                           │
+│ Features found: 22     Bug fix commits: 125     Health: 60.2/100             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+                                Features by Risk
+╭─────┬────────────────────────┬────────┬─────────┬───────────┬────────────────╮
+│     │ Feature                │ Health │ Commits │ Bug Fixes │ Bug %          │
+├─────┼────────────────────────┼────────┼─────────┼───────────┼────────────────┤
+│ ✗   │ payments               │   23   │     112 │        38 │ 33.9%          │
+│ ✗   │ booking-engine         │   29   │     487 │       151 │ 31.0%          │
+│ !   │ auth                   │   54   │      48 │        12 │ 25.0%          │
+│ ✓   │ dashboard              │   83   │      67 │         2 │  3.0%          │
+╰─────┴────────────────────────┴────────┴─────────┴───────────┴────────────────╯
+```
+
+## What it does
+
+1. **Reads your git history** — commits, blame, file changes over the last year
+2. **Clusters files into features** — using Claude Sonnet (or local Ollama) to group by business domain, not folder names
+3. **Scores each feature** — by bug-fix density, churn, bus factor, and age-weighted trends
+4. **Detects user flows** — with `--flows`, breaks features into end-to-end user journeys (`checkout-flow`, `signup-flow`, `manage-team-flow`)
+5. **Outputs JSON** — `~/.faultlines/feature-map-*.json`, ready for dashboards or CI
+
+### Without LLM vs with LLM
+
+```
+Without --llm:  "components", "views", "hooks"           ← technical folders
+With --llm:     "payments", "booking-engine", "auth"     ← business features
+```
+
+The LLM reads your file tree and commit messages to produce names an engineering manager would actually use.
+
+## Tested on real OSS repos
+
+Every number below is from a real `faultlines analyze --llm --flows` run. Reproduce any of them yourself.
+
+| Repo | Files | Features | Flows | Time | What it found |
+|------|------:|:--------:|:-----:|:----:|---------------|
+| [cal.com](https://github.com/calcom/cal.com) | 10,463 | 282 | 725 | 23m | trpc/viewer, web/bookings, ee/billing, web/settings |
+| [plane](https://github.com/makeplane/plane) | 4,932 | 134 | 408 | 12m | web/issues, editor/extensions, web/workspace, web/pages |
+| [Ghost](https://github.com/TryGhost/Ghost) | 6,898 | 101 | 281 | 14m | admin-x, ghost/members, ghost/email, stats |
+| [outline](https://github.com/outline/outline) | 2,390 | 22 | 188 | 6m | rich-text-editor, api-backend, dashboard, plugins |
+| [documenso](https://github.com/documenso/documenso) | 2,530 | 49 | 191 | 8m | trpc/envelope, remix/document-signing, ee/billing |
+| [formbricks](https://github.com/formbricks/formbricks) | 3,316 | 33 | 136 | 8m | web/survey, web/organization, web/auth |
+| [excalidraw](https://github.com/excalidraw/excalidraw) | 1,225 | 15 | 28 | 4m | excalidraw/shared-ui, excalidraw/data, renderer |
+| [trpc](https://github.com/trpc/trpc) | 1,573 | 14 | 37 | 1m | server/core, client/links, openapi, next-adapter |
+| [gin](https://github.com/gin-gonic/gin) | 130 | 22 | — | 15s | binding, render, context, recovery, logger |
+| [fastapi](https://github.com/fastapi/fastapi) | 2,981 | 14 | — | 80s | routing, dependencies, security, openapi, middleware |
+
+Libraries (gin, fastapi) are auto-detected and show modules instead of business features. Flows are suppressed for libraries since they don't have end-user journeys.
 
 ## Installation
 
 ```bash
-pip install faultline
+pip install faultlines
 ```
 
 Requires Python 3.11+.
 
-### With Ollama support (local LLM)
+### With Ollama (local, free, private)
 
 ```bash
-pip install 'faultline[ollama]'
+pip install 'faultlines[ollama]'
 ```
 
----
+## Usage
 
-## Quick Start
+### Basic (heuristic, no API key needed)
 
 ```bash
-# Analyse the current directory
-faultline analyze .
-
-# Analyse a specific repo
-faultline analyze ./path/to/repo
-
-# Focus on a source subdirectory (recommended for frontend/monorepo projects)
-faultline analyze . --src src/
-
-# Last 90 days, show top 5 risk zones
-faultline analyze . --days 90 --top 5
-
-# Just print, don't save
-faultline analyze . --no-save
-
-# AI-powered semantic feature detection
-faultline analyze . --llm --src src/
-
-# AI feature detection with flow breakdown
-faultline analyze . --llm --flows --src src/
+faultlines analyze .
+faultlines analyze ./path/to/repo
+faultlines analyze . --days 90 --top 5
 ```
 
----
-
-## AI-Powered Feature Detection
-
-By default faultline groups files by directory structure (fast, no API needed). With `--llm` enabled, Claude or a local Ollama model reads the full file tree and returns a **semantic feature map** — grouping files by business domain, not folder names.
-
-```
-Without --llm:  "components", "views", "hooks"        ← technical layers
-With --llm:     "user-auth", "payments", "dashboard"  ← business features
-```
-
-### Anthropic Claude (cloud)
+### AI-powered (recommended)
 
 ```bash
-# Pass your API key directly
-faultline analyze . --llm --api-key sk-ant-...
-
-# Or use an environment variable
+# Claude (cloud) — best quality
 export ANTHROPIC_API_KEY=sk-ant-...
-faultline analyze . --llm
+faultlines analyze . --llm
 
-# Recommended for large projects — focus on source files only
-faultline analyze . --llm --src src/
-```
+# With flow detection
+faultlines analyze . --llm --flows
 
-Get your API key at [console.anthropic.com](https://console.anthropic.com) → API Keys.
-Uses **Claude Haiku** for cost-efficient analysis (~$0.001 per repo).
+# Focus on source directory
+faultlines analyze . --llm --flows --src src/
 
-### Ollama (local, free, private)
-
-Run analysis entirely on your machine — no API key, no data leaves your computer.
-Recommended for private repositories.
-
-```bash
-# 1. Install Ollama
-brew install ollama        # macOS
-# or: curl -fsSL https://ollama.com/install.sh | sh
-
-# 2. Pull the recommended model (one time, ~4.7 GB)
+# Ollama (local, free)
 ollama pull llama3.1:8b
-
-# 3. Start the server
-ollama serve
-
-# 4. Install the ollama package
-pip install 'faultline[ollama]'
-
-# 5. Run
-faultline analyze . --llm --provider ollama --src src/
+faultlines analyze . --llm --provider ollama
 ```
 
-### Recommended models
+Get your API key at [console.anthropic.com](https://console.anthropic.com).
 
-| Model | Size | Semantic quality | Notes |
-|-------|------|-----------------|-------|
-| `llama3.1:8b` | 4.7 GB | ★★★★★ | **Default — best balance of quality and size** |
-| `mistral-nemo:12b` | 7.1 GB | ★★★★★ | Best overall quality, higher RAM requirement |
-| `qwen2.5:7b` | 4.7 GB | ★★★★ | Good alternative |
-| `llama3.2:3b` | 2.0 GB | ★★★ | Use when RAM is limited |
+### Monorepo support
 
-```bash
-# Best quality (requires ~8 GB RAM)
-ollama pull mistral-nemo:12b
-faultline analyze . --llm --provider ollama --model mistral-nemo:12b
+Automatically detects and analyses workspace packages:
 
-# Lightweight option
-ollama pull llama3.2:3b
-faultline analyze . --llm --provider ollama --model llama3.2:3b
-```
+- pnpm (`pnpm-workspace.yaml`)
+- npm/yarn (`package.json` workspaces)
+- Turborepo, Nx, Lerna
+- Cargo workspaces, Go workspaces
 
-The API key is validated **before** the analysis starts — no waiting to discover a bad key.
-Falls back silently to heuristic mode if the LLM is unavailable.
+Large monorepos are scanned per-package in parallel (4 workers).
 
----
+## Flow detection
 
-## Flow Detection
-
-With `--flows`, faultline goes one level deeper — breaking each feature into **user-facing flows**: named end-to-end sequences of actions (e.g. `checkout-flow`, `refund-flow`).
-
-Requires `--llm`. Works with both Anthropic and Ollama.
-
-```bash
-faultline analyze . --llm --flows --src src/
-faultline analyze . --llm --provider ollama --flows --src src/
-```
-
-Each flow includes:
-- **Health score** with trend detection (improving / degrading)
-- **Bus factor** — flags single-contributor flows
-- **Hotspot files** — source files with >40% bug fix ratio
-- **Test file count** — associated test coverage
-- **Bug fix PRs** — linked pull requests that fixed bugs
-- **Weekly timeline** — commit activity per ISO week
-
-Output shows two tables: features overview, then features with nested flows:
+With `--flows`, each feature is broken into user-facing flows — named action sequences like `checkout-flow` or `manage-team-flow`.
 
 ```
-                         Features by Risk
-╭──────────────┬────────┬─────────┬───────────┬────────╮
-│ Feature      │ Health │ Commits │ Bug Fixes │  Bug % │
-├──────────────┼────────┼─────────┼───────────┼────────┤
-│ payments     │   23   │     112 │        38 │ 33.9%  │
-│ auth         │   54   │      48 │        12 │ 25.0%  │
-╰──────────────┴────────┴─────────┴───────────┴────────╯
-
-                    Feature & Flow Map by Risk
-╭──────┬────────────────────────┬────────┬─────────┬───────────╮
-│      │ Feature / Flow         │ Health │ Commits │ Bug Fixes │
-├──────┼────────────────────────┼────────┼─────────┼───────────┤
-│  ✗   │ payments               │   23   │     112 │        38 │
-│      │   ├─ checkout-flow     │   18   │      67 │        28 │
-│      │   └─ refund-flow       │   41   │      45 │        10 │
-│  !   │ auth                   │   54   │      48 │        12 │
-│      │   └─ login-flow        │   54   │      48 │        12 │
-╰──────┴────────────────────────┴────────┴─────────┴───────────╯
+╭──────┬───────────────────────────┬────────┬─────────┬───────────╮
+│      │ Feature / Flow            │ Health │ Commits │ Bug Fixes │
+├──────┼───────────────────────────┼────────┼─────────┼───────────┤
+│  ✗   │ web/settings              │   23   │     206 │       144 │
+│      │   ├─ manage-org-roles     │   11   │      37 │        30 │
+│      │   ├─ manage-oauth-clients │   15   │      13 │        10 │
+│      │   └─ manage-billing       │   50   │      24 │        12 │
+│  ✓   │ auth/server               │   87   │      18 │         6 │
+│      │   └─ login-flow           │   87   │      18 │         6 │
+╰──────┴───────────────────────────┴────────┴─────────┴───────────╯
 ```
 
----
+Flow names and health scores are real — from actual Haiku detection against git commit history.
 
-## Focusing on a Subdirectory
+## Output format
 
-Use `--src` to restrict analysis to a specific folder. Everything outside that path is ignored.
-
-```bash
-# Sources in src/
-faultline analyze . --src src/
-
-# Sources in app/
-faultline analyze . --src app/
-
-# Monorepo — analyse one package
-faultline analyze . --src packages/api/src/
-```
-
-Automatically excluded regardless of location:
-- Dependencies: `node_modules/`, `vendor/`, `.venv/`
-- Build output: `dist/`, `build/`, `.next/`, `coverage/`
-- Tooling: `.github/`, `.husky/`, `.storybook/`, `.circleci/`
-- Binary and generated files: `.map`, `.lock`, `.woff`, `.ttf`
-
----
-
-## Output
-
-### Terminal
-
-```
-╭──────────────────────────────────────────────╮
-│             FeatureMap Analysis               │
-│                                               │
-│ Repository:           /path/to/repo           │
-│ Analyzed:             last 365 days           │
-│ Total commits:        847                     │
-│ Features found:       12                      │
-│ Bug fix commits:      143                     │
-│ Average health score: 61.3/100                │
-╰──────────────────────────────────────────────╯
-```
-
-### JSON
-
-Results are saved to `~/.faultline/` with a timestamped filename:
+Results save to `~/.faultlines/feature-map-{repo}-{timestamp}.json`:
 
 ```json
 {
   "repo_path": "/path/to/repo",
   "remote_url": "https://github.com/org/repo",
-  "analyzed_at": "2026-03-06T12:00:00Z",
-  "total_commits": 847,
-  "date_range_days": 365,
   "features": [
     {
       "name": "payments",
-      "description": "Handles Stripe payment processing and subscription billing.",
+      "description": "Stripe payment processing and subscription billing",
       "health_score": 23.0,
       "bug_fix_ratio": 0.339,
-      "bug_fixes": 38,
       "total_commits": 112,
+      "bug_fixes": 38,
       "authors": ["alice", "bob"],
       "paths": ["src/payments/stripe.py", "src/payments/webhooks.py"],
-      "bug_fix_prs": [
-        {
-          "number": 142,
-          "url": "https://github.com/org/repo/pull/142",
-          "title": "fix: handle expired card retry",
-          "author": "alice",
-          "date": "2026-03-01T09:00:00Z"
-        }
-      ],
       "flows": [
         {
           "name": "checkout-flow",
           "health_score": 18.0,
-          "bus_factor": 1,
-          "hotspot_files": ["src/payments/stripe/charge.ts"],
-          "health_trend": -0.12,
-          "test_file_count": 3,
+          "total_commits": 67,
           "bug_fixes": 28,
-          "total_commits": 67
+          "bus_factor": 1,
+          "hotspot_files": ["src/payments/charge.ts"]
         }
       ]
     }
@@ -271,84 +179,73 @@ Results are saved to `~/.faultline/` with a timestamped filename:
 }
 ```
 
-Custom output path:
+## Health score
 
-```bash
-faultline analyze . --output ./reports/health.json
+The health score (0–100) uses an **age-weighted sigmoid** based on bug-fix ratio:
+
+| Bug fix % | Health | Status |
+|:---------:|:------:|--------|
+| 0–20% | 85–99 | ✓ Healthy — mostly feature work |
+| 20–40% | 55–85 | ✓ Normal active development |
+| 40–55% | 30–55 | ! Elevated — worth watching |
+| 55–75% | 10–30 | ✗ High debt — maintenance-dominant |
+| 75%+ | 0–10 | ✗ Critical — almost all bug fixes |
+
+Recent bugs (< 30 days) weigh 2x more than older ones, so features that are actively getting worse score lower.
+
+## CLI reference
+
 ```
-
----
-
-## How It Works
-
-1. **Reads git history** — up to `--max-commits` commits within the requested date range
-2. **Collects tracked files** — respects `--src` filter, skips build output and tooling
-3. **Maps files to features** — multiple strategies:
-   - **Directory heuristics** (default): groups by first meaningful directory (`src/payments/` → `payments`)
-   - **Import graph clustering**: files connected by imports are grouped together (TS/JS)
-   - **Co-change detection**: files that frequently change together in commits are grouped
-   - **LLM semantic grouping** (`--llm`): sends the file tree to Claude or Ollama, gets back a `{feature: [files]}` mapping by business domain
-4. **Scans commit history** — for each feature, counts total commits and bug fix commits
-5. **Calculates health scores** — age-weighted bug fix ratio (recent bugs penalised 2x more than old ones), scaled by commit activity
-6. **Detects flows** (`--flows`): analyses file signatures, co-change pairs, and route anchors within each feature to map user-facing journeys
-7. **Assigns unassigned files** — files not claimed by any flow get assigned by directory proximity
-
-### Bug fix detection
-
-Commit messages are classified as bug fixes using pattern matching:
-
-**Detected as bug fix:** `fix`, `bug`, `hotfix`, `patch`, `revert`, `regression`, `crash`, `error`, `broken`, `resolve`, `timeout`, `null pointer`, `race condition`, `deadlock`, `memory leak`, `overflow`
-
-**Excluded (false positives):** `fix typo`, `fix lint`, `fix formatting`, `fix test`, `fix docs`, `fix ci`, `fix merge`, `fix import`
-
----
-
-## Health Score
-
-| Score | Status | Meaning |
-|-------|--------|---------|
-| 75–100 | ✓ Green | Healthy — low bug fix ratio |
-| 50–74 | ! Yellow | Watch — moderate technical debt |
-| 0–49 | ✗ Red | Critical — high bug fix ratio |
-
-The health score uses **age-weighted bug fix ratio**: recent bugs (< 30 days) carry 2x weight, while older bugs decay to 0.5x. This means a feature that's actively accumulating bugs scores worse than one with historical bugs that have since stabilised.
-
----
-
-## CLI Reference
-
-### `faultline analyze [REPO_PATH]`
+faultlines analyze [REPO_PATH]
+```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--src` | — | Subdirectory to focus on, e.g. `src/` or `app/` |
-| `--days` | `365` | Days of git history to analyse |
-| `--max-commits` | `5000` | Maximum commits to read |
-| `--top` | `3` | Number of top risk zones to highlight |
-| `--output` | `~/.faultline/` | Output file path |
-| `--no-save` | — | Skip saving JSON output |
-| `--llm` | `false` | Use AI for semantic feature detection |
-| `--flows` | `false` | Detect user-facing flows within features (requires `--llm`) |
+| `--llm` | off | AI-powered semantic feature detection |
+| `--flows` | off | Detect user-facing flows (requires `--llm`) |
 | `--provider` | `anthropic` | LLM provider: `anthropic` or `ollama` |
-| `--model` | — | Model override (default: `claude-haiku-4-5` / `llama3.1:8b`) |
-| `--api-key` | env | Anthropic API key (`ANTHROPIC_API_KEY` env var) |
-| `--ollama-url` | `http://localhost:11434` | Custom Ollama server URL |
+| `--model` | auto | Model override |
+| `--api-key` | env | Anthropic API key |
+| `--src` | — | Focus on subdirectory (e.g. `src/`) |
+| `--days` | `365` | Days of git history |
+| `--top` | `3` | Top risk zones to highlight |
+| `--output` | `~/.faultlines/` | Output file path |
+| `--no-save` | — | Don't save JSON |
+| `--legacy` | — | Use pre-rewrite 5-strategy pipeline |
+| `--ollama-url` | `localhost:11434` | Custom Ollama URL |
 
-### `faultline version`
+## How it works
 
-Prints the current version.
+1. `git log` + `git blame` → commit history with file attribution
+2. Heuristic candidates from directory structure and import graph
+3. Claude Sonnet (or Ollama) merges/renames/splits candidates into business features via an operations-based prompt
+4. Per-feature health scoring with sigmoid-weighted bug-fix ratio
+5. Optional: Haiku detects user-facing flows per feature from signatures and commit patterns
+6. JSON output + terminal report
 
----
+For monorepos, step 3 runs per-package in parallel (ThreadPoolExecutor, 4 workers).
 
-## Use Cases
+## Cost
 
-- **Engineering managers**: identify which features carry the most technical debt
-- **Sprint planning**: prioritise refactoring based on health scores, not gut feeling
-- **Code reviews**: spot high-risk areas before they become incidents
-- **CI integration**: track health scores over time, alert on degradation
-- **New team members**: understand which parts of the codebase need the most care
+| Repo size | Estimated LLM cost | Time |
+|-----------|:------------------:|:----:|
+| < 500 files | ~$0.01–0.05 | 15–30s |
+| 500–2,000 | ~$0.10–0.30 | 1–5m |
+| 2,000–5,000 | ~$0.30–0.70 | 5–12m |
+| 5,000–10,000 | ~$0.70–2.00 | 10–25m |
 
----
+Ollama is free (runs locally). Heuristic mode (no `--llm`) is free and instant.
+
+## Who is this for
+
+- **Engineering managers** — see where technical debt actually lives, not where you think it lives
+- **Tech leads** — prioritise refactoring with data, not gut feeling
+- **New team members** — understand which parts of the codebase need the most care
+- **Sprint planning** — make "should we refactor X?" a data conversation
+
+## Contributing
+
+Issues, PRs, and feedback welcome at [github.com/PashaSchool/featuremap](https://github.com/PashaSchool/featuremap).
 
 ## License
 

@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "faultline"
+name = "faultlines"
 version = "0.1.0"
-description = "Map features in any codebase from git history. No Jira required."
+description = "Map features in any codebase from git history alone. No Jira required."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "FeatureMap Team" },
+    { name = "Faultlines" },
 ]
 keywords = [
     "git", "features", "technical-debt", "code-analysis",
@@ -38,13 +38,17 @@ dependencies = [
 
 [project.optional-dependencies]
 ollama = ["ollama>=0.4.0"]
+deepseek = ["openai>=1.0.0"]
+analytics = ["httpx>=0.27.0"]
 
 [project.urls]
-Homepage = "https://github.com/pkuzina/faultline"
-Repository = "https://github.com/pkuzina/faultline"
-Issues = "https://github.com/pkuzina/faultline/issues"
+Homepage = "https://faultlines.dev"
+Repository = "https://github.com/PashaSchool/featuremap"
+Issues = "https://github.com/PashaSchool/featuremap/issues"
 
 [project.scripts]
+faultlines = "faultline.cli:app"
+# Keep the old name as alias for backwards compat
 faultline = "faultline.cli:app"
 
 [tool.hatch.envs.default]
