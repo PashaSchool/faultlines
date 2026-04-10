@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "faultlines"
+version = "0.1.0"
+description = "Map features in any codebase from git history alone. No Jira required."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Faultlines" },
+]
+keywords = [
+    "git", "features", "technical-debt", "code-analysis",
+    "engineering-metrics", "bug-fix-ratio", "health-score",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "gitpython>=3.1.40",
+    "rich>=13.7.0",
+    "pydantic>=2.5.0",
+    "anthropic>=0.25.0",
+]
+
+[project.optional-dependencies]
+ollama = ["ollama>=0.4.0"]
+deepseek = ["openai>=1.0.0"]
+analytics = ["httpx>=0.27.0"]
+
+[project.urls]
+Homepage = "https://faultlines.dev"
+Repository = "https://github.com/PashaSchool/faultlines"
+Issues = "https://github.com/PashaSchool/faultlines/issues"
+
+[project.scripts]
+faultlines = "faultline.cli:app"
+# Keep the old name as alias for backwards compat
+
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest>=7.4.0",
+    "pytest-cov",
+]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest tests/"
+
+[tool.hatch.build.targets.wheel]
+packages = ["faultline"]

@@ -1,0 +1,98 @@
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class TimelinePoint(BaseModel):
+    date: str          # ISO week label "YYYY-Www"
+    total_commits: int
+    bug_fix_commits: int
+    test_commits: int
+
+
+class Commit(BaseModel):
+    sha: str
+    message: str
+    author: str
+    date: datetime
+    files_changed: list[str]
+    is_bug_fix: bool = False
+    pr_number: int | None = None
+
+
+class PullRequest(BaseModel):
+    number: int
+    url: str          # full GitHub PR URL, empty string if remote unknown
+    title: str        # first line of the commit message
+    author: str
+    date: datetime
+
+
+class FileBlame(BaseModel):
+    path: str
+    authors: list[str]
+    last_modified: datetime
+    total_commits: int
+
+
+class Flow(BaseModel):
+    name: str                  # "checkout-flow", "login-flow"
+    description: str | None = None
+    paths: list[str]           # files belonging to this flow
+    authors: list[str]
+    total_commits: int
+    bug_fixes: int
+    bug_fix_ratio: float
+    last_modified: datetime
+    health_score: float        # 0-100, higher is better
+    bug_fix_prs: list[PullRequest] = []
+    test_file_count: int = 0   # number of test files associated with this flow
+    weekly_points: list[TimelinePoint] = []  # weekly activity timeline
+    bus_factor: int = 1                      # authors with ≥20% of flow commits
+    health_trend: float | None = None        # first_half_bug_ratio - second_half; positive = improving
+    hotspot_files: list[str] = []            # source files with >40% bug_fix_ratio (≥3 commits)
+    coverage_pct: float | None = None        # avg line coverage % across source files; None if unavailable
+
+
+class SymbolRange(BaseModel):
+    name: str              # exported symbol name, e.g. "FEATURE_FLAGS"
+    start_line: int        # 1-indexed, inclusive
+    end_line: int          # 1-indexed, inclusive
+    kind: str = "const"    # "const", "function", "class", "type", "enum", "reexport"
+
+
+class SymbolAttribution(BaseModel):
+    file_path: str                          # the shared file
+    symbols: list[str]                      # symbol names attributed to this feature
+    line_ranges: list[tuple[int, int]]      # merged non-overlapping (start, end) spans
+    attributed_lines: int                   # total lines across all ranges
+    total_file_lines: int                   # total lines in the file
+
+
+class Feature(BaseModel):
+    name: str
+    description: str | None = None  # LLM-generated semantic description
+    paths: list[str]          # directories/files belonging to this feature
+    authors: list[str]        # contributors
+    total_commits: int
+    bug_fixes: int            # number of bug fix commits
+    bug_fix_ratio: float      # bug_fixes / total_commits
+    last_modified: datetime
+    health_score: float       # 0-100, higher is better
+    flows: list[Flow] = []    # populated when --flows flag is used
+    bug_fix_prs: list[PullRequest] = []
+    coverage_pct: float | None = None  # avg line coverage % across source files; None if unavailable
+    shared_attributions: list[SymbolAttribution] = []  # symbol-scoped data for shared files
+    symbol_health_score: float | None = None           # health score weighted by symbol line ranges
+
+
+class FeatureMap(BaseModel):
+    repo_path: str
+    remote_url: str = ""      # GitHub base URL, e.g. https://github.com/org/repo
+    analyzed_at: datetime
+    total_commits: int
+    date_range_days: int
+    features: list[Feature]
+
+    def sorted_by_risk(self) -> list[Feature]:
+        """Returns features sorted from highest to lowest risk."""
+        return sorted(self.features, key=lambda f: f.bug_fix_ratio, reverse=True)

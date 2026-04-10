@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+.pyright/
+
+# featuremap output
+.featuremap/
+.faultline
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets
+.env
+.env.local
+.env.*
+*.key
+
+# Hatch
+.hatch/
+
+# SaaS dashboard (lives in separate private repo: faultlines-app)
+saas-dashboard/
+dashboard/
+
+# Internal mission docs (not for public)
+REWRITE_PLAN.md
+memory/
+
+# Landing page screenshots
+*.png
+*.webp
+
+# Waitlist data
+waitlist.json
+
+
