@@ -116,6 +116,11 @@ def _print_features_flat(feature_map: FeatureMap) -> None:
 
 def _print_features_with_flows(feature_map: FeatureMap) -> None:
     """Two-level table: features as section headers, flows as nested rows."""
+    has_coverage = any(
+        f.coverage_pct is not None or any(fl.coverage_pct is not None for fl in f.flows)
+        for f in feature_map.features
+    )
+
     table = Table(
         box=box.ROUNDED,
         show_header=True,
@@ -130,6 +135,8 @@ def _print_features_with_flows(feature_map: FeatureMap) -> None:
     table.add_column("Commits", justify="right", width=10)
     table.add_column("Bug Fixes", justify="right", width=10)
     table.add_column("Bug %", justify="right", width=8)
+    if has_coverage:
+        table.add_column("Cov %", justify="right", width=8)
 
     for feature in feature_map.sorted_by_risk():
         f_display_health = feature.symbol_health_score if feature.symbol_health_score is not None else feature.health_score
@@ -138,14 +145,21 @@ def _print_features_with_flows(feature_map: FeatureMap) -> None:
         f_pct = f"{feature.bug_fix_ratio * 100:.1f}%"
 
         # Feature header row
-        table.add_row(
+        row = [
             f"[{f_color}]{f_icon}[/]",
             f"[bold]{feature.name}[/bold]",
             f"[{f_color} bold]{f_display_health:.0f}[/]",
             f"[bold]{feature.total_commits}[/bold]",
             f"[{f_color} bold]{feature.bug_fixes}[/]" if feature.bug_fixes > 0 else "[bold]0[/bold]",
             f"[{f_color} bold]{f_pct}[/]",
-        )
+        ]
+        if has_coverage:
+            if feature.coverage_pct is not None:
+                cov_color = _coverage_color(feature.coverage_pct)
+                row.append(f"[{cov_color} bold]{feature.coverage_pct:.0f}%[/]")
+            else:
+                row.append("[dim]—[/dim]")
+        table.add_row(*row)
 
         # Nested flow rows — sorted by bug_fix_ratio descending
         sorted_flows = sorted(feature.flows, key=lambda fl: fl.bug_fix_ratio, reverse=True)
@@ -154,14 +168,21 @@ def _print_features_with_flows(feature_map: FeatureMap) -> None:
             fl_pct = f"{flow.bug_fix_ratio * 100:.1f}%"
             connector = "└─" if i == len(sorted_flows) - 1 else "├─"
 
-            table.add_row(
+            flow_row = [
                 "",
                 f"  [dim]{connector}[/dim] [{fl_color}]{flow.name}[/{fl_color}]",
                 f"[{fl_color}]{flow.health_score:.0f}[/]",
                 str(flow.total_commits),
                 f"[{fl_color}]{flow.bug_fixes}[/]" if flow.bug_fixes > 0 else "0",
                 f"[{fl_color}]{fl_pct}[/]",
-            )
+            ]
+            if has_coverage:
+                if flow.coverage_pct is not None:
+                    cov_color = _coverage_color(flow.coverage_pct)
+                    flow_row.append(f"[{cov_color}]{flow.coverage_pct:.0f}%[/]")
+                else:
+                    flow_row.append("[dim]—[/dim]")
+            table.add_row(*flow_row)
 
     console.print()
     console.print(table)

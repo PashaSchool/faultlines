@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from faultline.analyzer.coverage import read_coverage
+from faultline.analyzer.coverage import read_coverage, _read_cobertura, _read_python_json
 
 
 class TestReadCoverage:
@@ -58,3 +58,83 @@ class TestReadCoverage:
         (cov_dir / "lcov.info").write_text(lcov)
         result = read_coverage(str(tmp_path))
         assert result["empty.ts"] == 0.0
+
+    def test_reads_python_coverage_json(self, tmp_path: Path) -> None:
+        cov_data = {
+            "meta": {"version": "7.4"},
+            "files": {
+                str(tmp_path / "src" / "auth.py"): {
+                    "summary": {"percent_covered": 92.3},
+                },
+                str(tmp_path / "src" / "billing.py"): {
+                    "summary": {"percent_covered": 45.1},
+                },
+            },
+        }
+        (tmp_path / "coverage.json").write_text(json.dumps(cov_data))
+        result = read_coverage(str(tmp_path))
+        assert result["src/auth.py"] == 92.3
+        assert result["src/billing.py"] == 45.1
+
+    def test_reads_cobertura_xml(self, tmp_path: Path) -> None:
+        xml = """<?xml version="1.0" ?>
+        <coverage version="1">
+            <packages>
+                <package name="src">
+                    <classes>
+                        <class filename="src/auth.py" line-rate="0.85">
+                            <lines/>
+                        </class>
+                        <class filename="src/main.py" line-rate="0.42">
+                            <lines/>
+                        </class>
+                    </classes>
+                </package>
+            </packages>
+        </coverage>"""
+        (tmp_path / "coverage.xml").write_text(xml)
+        result = read_coverage(str(tmp_path))
+        assert result["src/auth.py"] == 85.0
+        assert result["src/main.py"] == 42.0
+
+    def test_explicit_path_python_json(self, tmp_path: Path) -> None:
+        cov_data = {
+            "files": {
+                str(tmp_path / "app.py"): {
+                    "summary": {"percent_covered": 77.0},
+                },
+            },
+        }
+        p = tmp_path / "my-coverage.json"
+        p.write_text(json.dumps(cov_data))
+        # Explicit path with .json extension but Python format
+        result = _read_python_json(p, str(tmp_path))
+        assert result["app.py"] == 77.0
+
+    def test_python_json_takes_precedence(self, tmp_path: Path) -> None:
+        """Python coverage.json should be found before Jest summary."""
+        cov_data = {
+            "files": {
+                str(tmp_path / "app.py"): {
+                    "summary": {"percent_covered": 88.0},
+                },
+            },
+        }
+        (tmp_path / "coverage.json").write_text(json.dumps(cov_data))
+        cov_dir = tmp_path / "coverage"
+        cov_dir.mkdir()
+        (cov_dir / "coverage-summary.json").write_text(
+            json.dumps({"app.py": {"lines": {"pct": 10}}})
+        )
+        result = read_coverage(str(tmp_path))
+        assert result["app.py"] == 88.0
+
+    def test_explicit_cobertura_path(self, tmp_path: Path) -> None:
+        xml = """<?xml version="1.0" ?>
+        <coverage><packages><package name="x">
+            <classes><class filename="f.py" line-rate="0.5"><lines/></class></classes>
+        </package></packages></coverage>"""
+        p = tmp_path / "report.xml"
+        p.write_text(xml)
+        result = _read_cobertura(p)
+        assert result["f.py"] == 50.0

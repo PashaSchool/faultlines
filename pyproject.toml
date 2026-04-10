@@ -61,3 +61,42 @@ test = "pytest tests/"
 
 [tool.hatch.build.targets.wheel]
 packages = ["faultline"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--cov=faultline",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=html:htmlcov",
+    "--cov-config=pyproject.toml",
+    "-q",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["faultline"]
+omit = [
+    "faultline/llm/detector.py",
+    "faultline/llm/deepseek_client.py",
+    "faultline/llm/flow_detector.py",
+    "faultline/cli.py",
+    "faultline/digest/*",
+    "faultline/integrations/*",
+    "faultline/output/reporter.py",
+    "faultline/analyzer/evolve.py",
+    "faultline/analyzer/incremental.py",
+    "faultline/analyzer/shared_files.py",
+]
+
+[tool.coverage.report]
+fail_under = 65
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+]
+precision = 1
+
+[tool.coverage.html]
+directory = "htmlcov"

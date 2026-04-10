@@ -950,11 +950,40 @@ def _apply_feature_coverage(
                 continue
             # Try matching with and without path_prefix
             full_path = f"{path_prefix}{file_path}" if path_prefix else file_path
-            pct = coverage_data.get(full_path) or coverage_data.get(file_path)
+            pct = _match_coverage(coverage_data, file_path, full_path)
             if pct is not None:
                 coverages.append(pct)
         if coverages:
             feature.coverage_pct = round(sum(coverages) / len(coverages), 1)
+
+        # Apply coverage to flows within this feature
+        for flow in feature.flows:
+            flow_coverages = []
+            for file_path in flow.paths:
+                if _is_test_file(file_path):
+                    continue
+                full_path = f"{path_prefix}{file_path}" if path_prefix else file_path
+                pct = _match_coverage(coverage_data, file_path, full_path)
+                if pct is not None:
+                    flow_coverages.append(pct)
+            if flow_coverages:
+                flow.coverage_pct = round(sum(flow_coverages) / len(flow_coverages), 1)
+
+
+def _match_coverage(
+    coverage_data: dict[str, float],
+    file_path: str,
+    full_path: str,
+) -> float | None:
+    """Match a file against coverage data with flexible path matching."""
+    pct = coverage_data.get(full_path) or coverage_data.get(file_path)
+    if pct is not None:
+        return pct
+    # Fuzzy suffix match for mismatched prefixes
+    for cov_path, cov_pct in coverage_data.items():
+        if cov_path.endswith(file_path) or file_path.endswith(cov_path.lstrip("/")):
+            return cov_pct
+    return None
 
 
 def _detect_flows(
