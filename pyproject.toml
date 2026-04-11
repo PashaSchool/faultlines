@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "faultlines"
-version = "0.2.1"
+version = "0.3.0"
 description = "Map features in any codebase from git history alone. No Jira required."
 readme = "README.md"
 license = "MIT"
@@ -40,6 +40,7 @@ dependencies = [
 ollama = ["ollama>=0.4.0"]
 deepseek = ["openai>=1.0.0"]
 analytics = ["httpx>=0.27.0"]
+mcp = ["mcp>=1.0.0"]
 
 [project.urls]
 Homepage = "https://faultlines.dev"
@@ -48,6 +49,7 @@ Issues = "https://github.com/PashaSchool/faultlines/issues"
 
 [project.scripts]
 faultlines = "faultline.cli:app"
+faultlines-mcp = "faultline.mcp_server:main"
 # Keep the old name as alias for backwards compat
 
 [tool.hatch.envs.default]
