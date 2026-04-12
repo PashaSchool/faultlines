@@ -45,6 +45,34 @@ mcp = FastMCP("faultlines")
 _AVG_GREP_FILES_PER_QUERY = 15          # files an agent would read without MCP
 _AVG_TOKENS_PER_FILE = 2500             # ~10KB at 4 chars/token
 _AVG_MCP_RESPONSE_TOKENS = 500          # typical MCP response size
+_STALE_DAYS = 30                        # warn after this many days
+
+
+def _stale_warning(fm: dict[str, Any]) -> str | None:
+    """Return a warning string if the feature map is older than _STALE_DAYS."""
+    analyzed_at = fm.get("analyzed_at")
+    if not analyzed_at:
+        return None
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(analyzed_at.replace("Z", "+00:00"))
+        age = (datetime.now(tz=timezone.utc) - ts).days
+        if age > _STALE_DAYS:
+            return (
+                f"Feature map is {age} days old. Results may be outdated. "
+                f"Run `faultlines analyze .` to refresh."
+            )
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _inject_warning(result: dict[str, Any], fm: dict[str, Any]) -> dict[str, Any]:
+    """Add a stale_warning field to the result if the map is old."""
+    warning = _stale_warning(fm)
+    if warning:
+        result["stale_warning"] = warning
+    return result
 
 
 def _load_map() -> dict[str, Any]:
@@ -107,7 +135,7 @@ def list_features() -> dict[str, Any]:
         fm.get("features", []),
         key=lambda f: f.get("health_score", 100),
     )
-    return {
+    return _inject_warning({
         "repo_path": fm.get("repo_path", ""),
         "total_features": len(features),
         "total_commits": fm.get("total_commits", 0),
@@ -125,7 +153,7 @@ def list_features() -> dict[str, Any]:
             for f in features
         ],
         "_savings_metadata": _savings_metadata(0),
-    }
+    }, fm)
 
 
 @mcp.tool()
@@ -147,7 +175,7 @@ def find_feature(query: str) -> dict[str, Any] | None:
         name = (f.get("name") or "").lower()
         desc = (f.get("description") or "").lower()
         if q in name or q in desc:
-            return {
+            return _inject_warning({
                 "name": f["name"],
                 "description": f.get("description"),
                 "health": round(f.get("health_score", 0)),
@@ -161,7 +189,7 @@ def find_feature(query: str) -> dict[str, Any] | None:
                     for fl in f.get("flows", [])
                 ],
                 "_savings_metadata": _savings_metadata(len(f.get("paths", []))),
-            }
+            }, fm)
     return None
 
 
@@ -179,7 +207,7 @@ def get_feature_files(feature_name: str) -> dict[str, Any]:
     fm = _load_map()
     for f in fm.get("features", []):
         if f.get("name") == feature_name:
-            return {
+            return _inject_warning({
                 "feature": feature_name,
                 "files": f.get("paths", []),
                 "file_count": len(f.get("paths", [])),
@@ -188,7 +216,7 @@ def get_feature_files(feature_name: str) -> dict[str, Any]:
                     for h in fl.get("hotspot_files", [])
                 ][:5],
                 "_savings_metadata": _savings_metadata(len(f.get("paths", []))),
-            }
+            }, fm)
     return {"error": f"Feature '{feature_name}' not found", "available": [
         f["name"] for f in fm.get("features", [])
     ]}
@@ -229,10 +257,10 @@ def get_hotspots(limit: int = 5) -> dict[str, Any]:
             "owners": f.get("authors", [])[:3],
         })
 
-    return {
+    return _inject_warning({
         "hotspots": result,
         "_savings_metadata": _savings_metadata(limit),
-    }
+    }, fm)
 
 
 @mcp.tool()
@@ -255,14 +283,14 @@ def get_feature_owners(feature_name: str) -> dict[str, Any]:
                 fl.get("bus_factor", 1) for fl in f.get("flows", [])
             ]
             min_bus_factor = min(flow_bus_factors) if flow_bus_factors else len(authors) or 1
-            return {
+            return _inject_warning({
                 "feature": feature_name,
                 "owners": authors,
                 "total_contributors": len(authors),
                 "bus_factor": min_bus_factor,
                 "at_risk": min_bus_factor == 1,
                 "_savings_metadata": _savings_metadata(1),
-            }
+            }, fm)
     return {"error": f"Feature '{feature_name}' not found"}
 
 
@@ -284,7 +312,7 @@ def get_flow_files(feature_name: str, flow_name: str) -> dict[str, Any]:
             continue
         for fl in f.get("flows", []):
             if fl.get("name") == flow_name:
-                return {
+                return _inject_warning({
                     "feature": feature_name,
                     "flow": flow_name,
                     "description": fl.get("description"),
@@ -294,7 +322,7 @@ def get_flow_files(feature_name: str, flow_name: str) -> dict[str, Any]:
                     "bug_fix_ratio": round(fl.get("bug_fix_ratio", 0) * 100, 1),
                     "hotspot_files": fl.get("hotspot_files", []),
                     "_savings_metadata": _savings_metadata(len(fl.get("paths", []))),
-                }
+                }, fm)
     return {"error": f"Flow '{flow_name}' in feature '{feature_name}' not found"}
 
 
@@ -319,7 +347,7 @@ def get_repo_summary() -> dict[str, Any]:
     ]
     avg_coverage = sum(with_coverage) / len(with_coverage) if with_coverage else None
 
-    return {
+    return _inject_warning({
         "repo_path": fm.get("repo_path", ""),
         "remote_url": fm.get("remote_url", ""),
         "analyzed_at": fm.get("analyzed_at", ""),
@@ -332,7 +360,7 @@ def get_repo_summary() -> dict[str, Any]:
         "avg_coverage_pct": round(avg_coverage, 1) if avg_coverage is not None else None,
         "features_at_risk": at_risk,
         "_savings_metadata": _savings_metadata(0),
-    }
+    }, fm)
 
 
 def main() -> None:
