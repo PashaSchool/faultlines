@@ -1,8 +1,8 @@
-"""Tests for analyzer/cochange_detector.py."""
+"""Tests for impact/cochange.py (moved from analyzer/cochange_detector.py)."""
 
 from datetime import datetime, timezone
 
-from faultline.analyzer.cochange_detector import (
+from faultline.impact.cochange import (
     _UnionFind,
     _cluster_name,
     _feature_name_from_path,
