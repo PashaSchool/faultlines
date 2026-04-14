@@ -119,3 +119,43 @@ class TestMaybeTriggerRefresh:
             triggered = maybe_trigger_refresh(fm_path, data)
         assert triggered is True
         mock_bg.assert_called_once()
+        # Default throttle used when env var unset
+        kwargs = mock_bg.call_args.kwargs
+        assert kwargs.get("throttle_seconds") is None
+
+    def test_throttle_override_from_env(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("FAULTLINE_AUTO_REFRESH", "1")
+        monkeypatch.setenv("FAULTLINE_AUTO_REFRESH_THROTTLE", "60")
+        fm_path = tmp_path / "feature-map.json"
+        with patch("subprocess.check_output") as mock_git, \
+             patch("faultline.cache.auto_refresh.trigger_background_refresh") as mock_bg:
+            mock_git.return_value = "new_sha\n"
+            mock_bg.return_value = True
+            data = {"repo_path": str(tmp_path), "last_scanned_sha": "old_sha"}
+            maybe_trigger_refresh(fm_path, data)
+        assert mock_bg.call_args.kwargs.get("throttle_seconds") == 60
+
+    def test_throttle_zero_disables_throttling(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("FAULTLINE_AUTO_REFRESH", "1")
+        monkeypatch.setenv("FAULTLINE_AUTO_REFRESH_THROTTLE", "0")
+        fm_path = tmp_path / "feature-map.json"
+        with patch("subprocess.check_output") as mock_git, \
+             patch("faultline.cache.auto_refresh.trigger_background_refresh") as mock_bg:
+            mock_git.return_value = "new_sha\n"
+            mock_bg.return_value = True
+            data = {"repo_path": str(tmp_path), "last_scanned_sha": "old_sha"}
+            maybe_trigger_refresh(fm_path, data)
+        assert mock_bg.call_args.kwargs.get("throttle_seconds") == 0
+
+    def test_bad_throttle_value_uses_default(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("FAULTLINE_AUTO_REFRESH", "1")
+        monkeypatch.setenv("FAULTLINE_AUTO_REFRESH_THROTTLE", "not-a-number")
+        fm_path = tmp_path / "feature-map.json"
+        with patch("subprocess.check_output") as mock_git, \
+             patch("faultline.cache.auto_refresh.trigger_background_refresh") as mock_bg:
+            mock_git.return_value = "new_sha\n"
+            mock_bg.return_value = True
+            data = {"repo_path": str(tmp_path), "last_scanned_sha": "old_sha"}
+            maybe_trigger_refresh(fm_path, data)
+        # Falls back to None (i.e. default) for bad input
+        assert mock_bg.call_args.kwargs.get("throttle_seconds") is None

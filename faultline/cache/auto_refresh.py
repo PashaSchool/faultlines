@@ -212,12 +212,36 @@ def _slug(repo_path: str) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _env_throttle_seconds() -> int | None:
+    """Read throttle override from FAULTLINE_AUTO_REFRESH_THROTTLE env var.
+
+    Values:
+        "0"        — disable throttle entirely (every call can trigger)
+        "<int>"    — seconds between refresh attempts
+        unset/bad  — use _DEFAULT_THROTTLE_SECONDS (5 min)
+    """
+    raw = os.environ.get("FAULTLINE_AUTO_REFRESH_THROTTLE")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+        if value < 0:
+            return None
+        return value
+    except ValueError:
+        return None
+
+
 def maybe_trigger_refresh(feature_map_path: Path, fm_data: dict) -> bool:
     """Called from the MCP server's load-map path.
 
     Returns True if a refresh was triggered. The caller should add a
     warning to the response so the AI agent knows the current data
     may be stale but is being updated.
+
+    Honors these env vars:
+        FAULTLINE_AUTO_REFRESH            "1" to enable (required)
+        FAULTLINE_AUTO_REFRESH_THROTTLE   seconds between attempts (default 300)
     """
     if os.environ.get("FAULTLINE_AUTO_REFRESH") not in ("1", "true", "yes"):
         return False
@@ -243,5 +267,8 @@ def maybe_trigger_refresh(feature_map_path: Path, fm_data: dict) -> bool:
     if current == scanned_sha:
         return False  # already fresh
 
-    # Stale → trigger background refresh (throttled)
-    return trigger_background_refresh(feature_map_path, repo_path)
+    # Stale → trigger background refresh (throttle configurable via env)
+    throttle = _env_throttle_seconds()
+    return trigger_background_refresh(
+        feature_map_path, repo_path, throttle_seconds=throttle,
+    )
