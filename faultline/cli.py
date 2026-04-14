@@ -723,6 +723,25 @@ def analyze(
         # 7. Print the report
         print_report(feature_map, impact_scores=impact_scores)
 
+        # 7b. Stamp cache metadata (git HEAD + content hashes) for incremental refresh
+        try:
+            from faultline.cache.hashing import hash_files
+            import subprocess as _sp
+            try:
+                head_sha = _sp.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(repo.working_tree_dir), text=True, timeout=5,
+                ).strip()
+                feature_map.last_scanned_sha = head_sha
+            except Exception:
+                pass
+            all_tracked = sorted({
+                p for f in feature_map.features for p in f.paths
+            })
+            feature_map.file_hashes = hash_files(all_tracked, str(repo.working_tree_dir))
+        except Exception as _hash_exc:
+            console.print(f"[dim]Cache metadata skipped: {_hash_exc}[/dim]")
+
         # 8. Save to disk
         if save:
             saved_path = write_feature_map(feature_map, output)
@@ -1573,6 +1592,100 @@ def evolve(
     output_path = output or None
     saved = write_feature_map(updated, output_path)
     console.print(f"\n[green]Saved:[/green] {saved}")
+
+
+@app.command()
+def refresh(
+    repo_path: str = typer.Argument(".", help="Repo to refresh (must have a prior scan in ~/.faultline/)"),
+    map_path: Optional[str] = typer.Option(
+        None, "--map",
+        help="Path to existing feature-map JSON. Defaults to the most recent ~/.faultline/feature-map-*.json",
+    ),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o",
+        help="Where to write the refreshed feature map. Defaults to ~/.faultline/ with a new timestamp.",
+    ),
+    check_only: bool = typer.Option(
+        False, "--check",
+        help="Report freshness without writing a refreshed map.",
+    ),
+):
+    """
+    Incrementally update a feature map to match the current git HEAD.
+
+    Runs the existing analyzer/incremental.py pipeline (no LLM calls)
+    and updates content/symbol hashes. Orders of magnitude cheaper
+    than a full --llm scan and preserves flow + symbol attributions
+    on untouched features.
+
+    Examples:
+        faultlines refresh
+        faultlines refresh /path/to/repo --check
+        faultlines refresh . --output latest.json
+    """
+    import json as _json
+    from faultline.cache.refresh import refresh_feature_map
+    from faultline.cache.freshness import check_freshness
+    from faultline.models.types import FeatureMap
+    from faultline.output.writer import write_feature_map
+
+    # Locate the map to refresh
+    if map_path:
+        map_file = Path(map_path).expanduser()
+    else:
+        home = Path.home() / ".faultline"
+        candidates = sorted(home.glob("feature-map-*.json"))
+        if not candidates:
+            console.print(
+                "[red]No feature map found.[/red] "
+                "Run `faultlines analyze . --llm --flows` first."
+            )
+            raise typer.Exit(1)
+        map_file = candidates[-1]
+
+    if not map_file.exists():
+        console.print(f"[red]Map not found:[/red] {map_file}")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Loading:[/dim] {map_file}")
+    fm = FeatureMap.model_validate_json(map_file.read_text())
+
+    if check_only:
+        report = check_freshness(fm, repo_path)
+        if not report.is_stale:
+            console.print("[green]✓ Feature map is up to date with HEAD[/green]")
+        else:
+            console.print(
+                f"[yellow]Stale:[/yellow] {report.commits_behind} commit(s) behind. "
+                f"{report.changed_files_count} file(s) changed. "
+                f"{'New files detected.' if report.has_new_files else ''}"
+            )
+        return
+
+    result = refresh_feature_map(fm, repo_path)
+
+    if not result.freshness_before.is_stale:
+        console.print("[green]✓ Already up to date — no refresh needed[/green]")
+        return
+
+    # Save updated map
+    saved_path = write_feature_map(result.updated_map, output)
+
+    console.print(f"[green]✓ Refresh complete[/green]")
+    console.print(f"  Commits behind before: {result.freshness_before.commits_behind}")
+    console.print(f"  Files modified: {result.files_truly_modified}")
+    console.print(f"  Files added: {result.files_added}")
+    console.print(f"  Files removed: {result.files_removed}")
+    console.print(f"  LLM calls saved: ~{result.llm_calls_saved}")
+    if result.orphan_files:
+        console.print(
+            f"  [yellow]⚠ {len(result.orphan_files)} orphan file(s) not mapped to any feature.[/yellow]"
+        )
+        console.print(
+            f"    Run `faultlines analyze . --llm --flows` for a full re-scan, "
+            f"or check them manually."
+        )
+    console.print(f"\n[dim]Saved:[/dim] {saved_path}")
 
 
 @app.command()

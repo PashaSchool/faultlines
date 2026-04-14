@@ -68,11 +68,60 @@ def _stale_warning(fm: dict[str, Any]) -> str | None:
 
 
 def _inject_warning(result: dict[str, Any], fm: dict[str, Any]) -> dict[str, Any]:
-    """Add a stale_warning field to the result if the map is old."""
+    """Add stale_warning and freshness fields to the result.
+
+    freshness compares last_scanned_sha to the current git HEAD and
+    tells the AI agent how many commits behind the feature map is.
+    """
     warning = _stale_warning(fm)
     if warning:
         result["stale_warning"] = warning
+
+    freshness = _git_freshness(fm)
+    if freshness is not None:
+        result["freshness"] = freshness
+        if freshness.get("is_stale"):
+            behind = freshness.get("commits_behind", 0)
+            result["stale_warning"] = (
+                f"Feature map is {behind} commit(s) behind HEAD. "
+                f"Run `faultlines refresh` for an LLM-free incremental update."
+            )
     return result
+
+
+def _git_freshness(fm: dict[str, Any]) -> dict[str, Any] | None:
+    """Compare stored SHA to current HEAD. Returns None if git unavailable."""
+    scanned_sha = fm.get("last_scanned_sha", "")
+    repo_path = fm.get("repo_path", "")
+    if not scanned_sha or not repo_path:
+        return None
+
+    import subprocess
+    try:
+        current = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, text=True, timeout=3,
+        ).strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    if current == scanned_sha:
+        return {"is_stale": False, "current_sha": current[:8], "scanned_sha": scanned_sha[:8]}
+
+    try:
+        behind = int(subprocess.check_output(
+            ["git", "rev-list", "--count", f"{scanned_sha}..{current}"],
+            cwd=repo_path, text=True, timeout=5,
+        ).strip())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, FileNotFoundError):
+        behind = 0
+
+    return {
+        "is_stale": True,
+        "current_sha": current[:8],
+        "scanned_sha": scanned_sha[:8],
+        "commits_behind": behind,
+    }
 
 
 def _load_map() -> dict[str, Any]:

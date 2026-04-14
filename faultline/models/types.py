@@ -93,6 +93,9 @@ class FeatureMap(BaseModel):
     total_commits: int
     date_range_days: int
     features: list[Feature]
+    last_scanned_sha: str = ""               # git HEAD at scan time — used for incremental refresh
+    file_hashes: dict[str, str] = {}         # {rel_path: sha256_of_content} — skip re-parse when file unchanged
+    symbol_hashes: dict[str, dict[str, str]] = {}  # {rel_path: {symbol_name: sha256_of_body}} — per-symbol cache for incremental LLM skip
 
     def sorted_by_risk(self) -> list[Feature]:
         """Returns features sorted from highest to lowest risk."""
