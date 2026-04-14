@@ -82,10 +82,19 @@ def _inject_warning(result: dict[str, Any], fm: dict[str, Any]) -> dict[str, Any
         result["freshness"] = freshness
         if freshness.get("is_stale"):
             behind = freshness.get("commits_behind", 0)
-            result["stale_warning"] = (
-                f"Feature map is {behind} commit(s) behind HEAD. "
-                f"Run `faultlines refresh` for an LLM-free incremental update."
-            )
+            auto_on = os.environ.get("FAULTLINE_AUTO_REFRESH") in ("1", "true", "yes")
+            if auto_on:
+                result["stale_warning"] = (
+                    f"Feature map is {behind} commit(s) behind HEAD. "
+                    f"A background refresh has been triggered — next query "
+                    f"will see fresh data."
+                )
+            else:
+                result["stale_warning"] = (
+                    f"Feature map is {behind} commit(s) behind HEAD. "
+                    f"Run `faultlines refresh` for an LLM-free incremental update, "
+                    f"or set FAULTLINE_AUTO_REFRESH=1 to enable automatic updates."
+                )
     return result
 
 
@@ -140,7 +149,9 @@ def _load_map() -> dict[str, Any]:
                 f"FAULTLINE_MAP_PATH={explicit} does not exist. "
                 f"Run `faultlines analyze .` first."
             )
-        return json.loads(p.read_text())
+        data = json.loads(p.read_text())
+        _maybe_auto_refresh(p, data)
+        return data
 
     home_dir = Path.home() / ".faultline"
     if not home_dir.exists():
@@ -155,7 +166,25 @@ def _load_map() -> dict[str, Any]:
             "No feature-map-*.json found. "
             "Run `faultlines analyze /path/to/your/repo --llm --flows` first."
         )
-    return json.loads(scans[-1].read_text())
+    latest = scans[-1]
+    data = json.loads(latest.read_text())
+    _maybe_auto_refresh(latest, data)
+    return data
+
+
+def _maybe_auto_refresh(path: Path, data: dict[str, Any]) -> None:
+    """If FAULTLINE_AUTO_REFRESH is enabled, kick off a background refresh.
+
+    Non-blocking: returns immediately. Current query sees the data as it
+    was when loaded; next query will see the refreshed version.
+    """
+    try:
+        from faultline.cache.auto_refresh import maybe_trigger_refresh
+        maybe_trigger_refresh(path, data)
+    except Exception:
+        # Auto-refresh is best-effort — never break a tool call because
+        # of a refresh issue.
+        pass
 
 
 def _savings_metadata(files_returned: int) -> dict[str, Any]:
