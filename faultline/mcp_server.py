@@ -367,6 +367,8 @@ def main() -> None:
     """Entry point for the ``faultlines-mcp`` console script."""
     # Register impact analysis tools (adds 2 more MCP tools)
     import faultline.impact.mcp_tools  # noqa: F401
+    # Register symbol-level attribution tools (adds 2 more MCP tools)
+    import faultline.symbols.mcp_tools  # noqa: F401
 
     mcp.run()
 

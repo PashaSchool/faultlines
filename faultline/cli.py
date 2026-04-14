@@ -109,6 +109,16 @@ def analyze(
         help="Detect user-facing flows within features (requires --llm)",
         is_flag=True,
     ),
+    symbols: bool = typer.Option(
+        False,
+        "--symbols",
+        help=(
+            "Attribute individual functions/classes to specific flows via LLM. "
+            "Makes MCP responses return precise symbols instead of whole files "
+            "(requires --llm --flows)."
+        ),
+        is_flag=True,
+    ),
     coverage: Optional[str] = typer.Option(
         None,
         "--coverage",
@@ -661,6 +671,35 @@ def analyze(
                 remote_url=remote_url,
                 coverage_data=coverage_data,
                 e2e_anchors=e2e_anchors,
+            )
+
+        # 6c.5 Symbol-level attribution (optional, --symbols)
+        if symbols and llm and flows and provider == "anthropic":
+            try:
+                from faultline.symbols.pipeline import enrich_with_symbols
+                console.print("[blue]Attributing symbols to flows...[/blue]")
+                enrich_with_symbols(
+                    feature_map=feature_map,
+                    signatures=signatures or {},
+                    api_key=api_key,
+                    model=model,
+                )
+                enriched_flows = sum(
+                    len([fl for fl in f.flows if fl.symbol_attributions])
+                    for f in feature_map.features
+                )
+                total_flows = sum(len(f.flows) for f in feature_map.features)
+                console.print(
+                    f"[dim]Symbol attribution: {enriched_flows}/{total_flows} flows enriched[/dim]"
+                )
+            except Exception as _exc:
+                console.print(
+                    f"[yellow]Symbol attribution failed — falling back to file-level[/yellow] "
+                    f"[dim]({_exc})[/dim]"
+                )
+        elif symbols and not (llm and flows):
+            console.print(
+                "[yellow]--symbols requires --llm --flows. Skipping.[/yellow]"
             )
 
         # 6d. Analytics integration (optional)

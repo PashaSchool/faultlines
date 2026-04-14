@@ -51,6 +51,7 @@ class Flow(BaseModel):
     health_trend: float | None = None        # first_half_bug_ratio - second_half; positive = improving
     hotspot_files: list[str] = []            # source files with >40% bug_fix_ratio (≥3 commits)
     coverage_pct: float | None = None        # avg line coverage % across source files; None if unavailable
+    symbol_attributions: list["SymbolAttribution"] = []  # symbols (functions/classes) that belong to this flow — populated when --symbols is enabled
 
 
 class SymbolRange(BaseModel):
