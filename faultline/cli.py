@@ -1609,6 +1609,22 @@ def refresh(
         False, "--check",
         help="Report freshness without writing a refreshed map.",
     ),
+    detect_new: bool = typer.Option(
+        False, "--detect-new",
+        help=(
+            "After refresh, classify orphan files (not in any feature) via LLM. "
+            "Proposes extensions of existing features or entirely new features. "
+            "Requires ANTHROPIC_API_KEY."
+        ),
+    ),
+    auto_apply: bool = typer.Option(
+        False, "--auto-apply",
+        help="With --detect-new, automatically apply high-confidence proposals to the map.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key",
+        help="Anthropic API key for --detect-new (defaults to ANTHROPIC_API_KEY env var)",
+    ),
 ):
     """
     Incrementally update a feature map to match the current git HEAD.
@@ -1664,28 +1680,85 @@ def refresh(
 
     result = refresh_feature_map(fm, repo_path)
 
-    if not result.freshness_before.is_stale:
+    if not result.freshness_before.is_stale and not detect_new:
         console.print("[green]✓ Already up to date — no refresh needed[/green]")
         return
 
-    # Save updated map
-    saved_path = write_feature_map(result.updated_map, output)
+    updated_map = result.updated_map
 
-    console.print(f"[green]✓ Refresh complete[/green]")
+    # Orphan classification (opt-in, LLM-based)
+    if detect_new and result.orphan_files:
+        console.print(
+            f"[blue]Classifying {len(result.orphan_files)} orphan file(s)...[/blue]"
+        )
+        from faultline.cache.discovery import discover_from_orphans, apply_report
+        report = discover_from_orphans(
+            orphan_files=result.orphan_files,
+            feature_map=updated_map,
+            api_key=api_key,
+        )
+        console.print(f"[dim]{report.summary()}[/dim]")
+
+        # Pretty-print proposals
+        if report.extensions:
+            console.print("\n[bold]Extensions of existing features:[/bold]")
+            for p in report.extensions:
+                files_str = _trim_file_list(p.files)
+                console.print(
+                    f"  [green]→[/green] [bold]{p.extends_feature}[/bold] "
+                    f"gains {len(p.files)} file(s) "
+                    f"[dim]({p.confidence}, {p.reason})[/dim]"
+                )
+                console.print(f"    {files_str}")
+
+        if report.new_features:
+            console.print("\n[bold]Candidate new features:[/bold]")
+            for p in report.new_features:
+                files_str = _trim_file_list(p.files)
+                console.print(
+                    f"  [cyan]+[/cyan] [bold]{p.new_feature_name}[/bold] "
+                    f"({len(p.files)} files, {p.confidence})"
+                )
+                if p.new_feature_description:
+                    console.print(f"    [dim]{p.new_feature_description}[/dim]")
+                console.print(f"    {files_str}")
+
+        if auto_apply:
+            applied = apply_report(updated_map, report, only_high_confidence=True)
+            console.print(
+                f"\n[green]✓ Auto-applied {applied} high-confidence proposal(s)[/green]"
+            )
+        elif report.extensions or report.new_features:
+            console.print(
+                "\n[dim]Review above. Re-run with --detect-new --auto-apply to apply "
+                "high-confidence proposals, or run a full `faultlines analyze` for a "
+                "fresh scan.[/dim]"
+            )
+
+    # Save updated map
+    saved_path = write_feature_map(updated_map, output)
+
+    console.print(f"\n[green]✓ Refresh complete[/green]")
     console.print(f"  Commits behind before: {result.freshness_before.commits_behind}")
     console.print(f"  Files modified: {result.files_truly_modified}")
     console.print(f"  Files added: {result.files_added}")
     console.print(f"  Files removed: {result.files_removed}")
     console.print(f"  LLM calls saved: ~{result.llm_calls_saved}")
-    if result.orphan_files:
+    if result.orphan_files and not detect_new:
         console.print(
             f"  [yellow]⚠ {len(result.orphan_files)} orphan file(s) not mapped to any feature.[/yellow]"
         )
         console.print(
-            f"    Run `faultlines analyze . --llm --flows` for a full re-scan, "
-            f"or check them manually."
+            f"    Run `faultlines refresh --detect-new` to classify them via LLM."
         )
     console.print(f"\n[dim]Saved:[/dim] {saved_path}")
+
+
+def _trim_file_list(files: list[str], max_shown: int = 4) -> str:
+    """Format a file list for terminal display."""
+    if len(files) <= max_shown:
+        return ", ".join(files)
+    return ", ".join(files[:max_shown]) + f", +{len(files) - max_shown} more"
 
 
 @app.command()
