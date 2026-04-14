@@ -1617,6 +1617,15 @@ def refresh(
             "Requires ANTHROPIC_API_KEY."
         ),
     ),
+    refresh_symbols: bool = typer.Option(
+        False, "--refresh-symbols",
+        help=(
+            "Update symbol-level attributions for flows: clean up removed "
+            "symbols and re-attribute newly added ones. Body-only changes "
+            "are preserved. Requires ANTHROPIC_API_KEY only when new symbols "
+            "appear."
+        ),
+    ),
     auto_apply: bool = typer.Option(
         False, "--auto-apply",
         help="With --detect-new, automatically apply high-confidence proposals to the map.",
@@ -1680,11 +1689,29 @@ def refresh(
 
     result = refresh_feature_map(fm, repo_path)
 
-    if not result.freshness_before.is_stale and not detect_new:
+    if not result.freshness_before.is_stale and not detect_new and not refresh_symbols:
         console.print("[green]✓ Already up to date — no refresh needed[/green]")
         return
 
     updated_map = result.updated_map
+
+    # Symbol-level incremental (opt-in)
+    if refresh_symbols:
+        import os as _os
+        _api_key = api_key or _os.environ.get("ANTHROPIC_API_KEY")
+        from faultline.cache.symbols import refresh_symbol_attributions
+        console.print("[blue]Refreshing symbol attributions...[/blue]")
+        sym_report = refresh_symbol_attributions(
+            feature_map=updated_map,
+            repo_path=repo_path,
+            api_key=_api_key,
+        )
+        console.print(f"[dim]{sym_report.summary()}[/dim]")
+        if sym_report.symbols_added and not _api_key:
+            console.print(
+                "[yellow]New symbols detected but no ANTHROPIC_API_KEY — "
+                "re-attribution skipped. Existing attributions preserved.[/yellow]"
+            )
 
     # Orphan classification (opt-in, LLM-based)
     if detect_new and result.orphan_files:
