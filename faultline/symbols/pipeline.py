@@ -21,14 +21,22 @@ def enrich_with_symbols(
     feature_map: FeatureMap,
     signatures: dict[str, FileSignature],
     *,
+    provider: str = "anthropic",
     api_key: str | None = None,
     model: str | None = None,
+    ollama_host: str = "http://localhost:11434",
     tracker: CostTracker | None = None,
 ) -> None:
     """Adds symbol_attributions to every flow and feature in the map.
 
     Skips features that have no flows (library repos, etc).
     Silently degrades to file-level attribution if LLM calls fail.
+
+    Args:
+        provider: "anthropic" or "ollama" for local-free attribution.
+        api_key: Anthropic API key (ignored for ollama).
+        model: Model override (defaults per provider).
+        ollama_host: Ollama server URL.
     """
     if not feature_map.features:
         return
@@ -38,7 +46,12 @@ def enrich_with_symbols(
         logger.info("no symbols extracted — skipping attribution")
         return
 
-    kwargs: dict = {"api_key": api_key, "tracker": tracker}
+    kwargs: dict = {
+        "provider": provider,
+        "api_key": api_key,
+        "ollama_host": ollama_host,
+        "tracker": tracker,
+    }
     if model:
         kwargs["model"] = model
 

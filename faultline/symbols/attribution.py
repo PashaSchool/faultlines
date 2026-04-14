@@ -21,6 +21,8 @@ from faultline.symbols.extractor import FileSymbols
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+_DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:14b"
+_DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 _MAX_SYMBOLS_IN_PROMPT = 120
 
 
@@ -28,8 +30,10 @@ def attribute_symbols_to_flows(
     feature: Feature,
     file_symbols: dict[str, FileSymbols],
     *,
+    provider: str = "anthropic",
     api_key: str | None = None,
-    model: str = _DEFAULT_MODEL,
+    model: str | None = None,
+    ollama_host: str = _DEFAULT_OLLAMA_HOST,
     tracker: CostTracker | None = None,
 ) -> None:
     """Mutates the feature in place to add symbol_attributions on each flow.
@@ -44,9 +48,13 @@ def attribute_symbols_to_flows(
     Args:
         feature: Feature to enrich. flows must already be populated.
         file_symbols: Output from extractor.extract_file_symbols().
+        provider: "anthropic" (default) or "ollama" for local-free attribution.
         api_key: Anthropic API key (falls back to ANTHROPIC_API_KEY env).
-        model: Claude model id.
-        tracker: Shared cost tracker.
+            Ignored for provider="ollama".
+        model: Model id override. Defaults to Sonnet for anthropic,
+            qwen2.5-coder:14b for ollama.
+        ollama_host: Ollama server URL. Only used when provider="ollama".
+        tracker: Shared cost tracker. Ollama calls record zero cost.
     """
     if not feature.flows:
         return
@@ -76,13 +84,21 @@ def attribute_symbols_to_flows(
     if total_flow_symbols == 0:
         return
 
-    mapping = _ask_llm(
-        feature=feature,
-        relevant_symbols=relevant_symbols,
-        api_key=api_key,
-        model=model,
-        tracker=tracker,
-    )
+    if provider == "ollama":
+        mapping = _ask_ollama(
+            feature=feature,
+            relevant_symbols=relevant_symbols,
+            model=model or _DEFAULT_OLLAMA_MODEL,
+            host=ollama_host,
+        )
+    else:
+        mapping = _ask_llm(
+            feature=feature,
+            relevant_symbols=relevant_symbols,
+            api_key=api_key,
+            model=model or _DEFAULT_MODEL,
+            tracker=tracker,
+        )
     if not mapping:
         return
 
@@ -150,6 +166,49 @@ def _ask_llm(
             pass
 
     text = response.content[0].text if response.content else ""
+    return _parse_response(text)
+
+
+def _ask_ollama(
+    *,
+    feature: Feature,
+    relevant_symbols: dict[str, list[str]],
+    model: str,
+    host: str,
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Local-free alternative to _ask_llm using Ollama HTTP API."""
+    try:
+        import httpx
+    except ImportError:
+        logger.warning("httpx not installed — required for Ollama symbol attribution")
+        return None
+
+    prompt = _build_prompt(feature, relevant_symbols)
+    if not prompt:
+        return None
+
+    try:
+        response = httpx.post(
+            f"{host.rstrip('/')}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0},
+            },
+            timeout=180.0,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning("Ollama symbol attribution call failed: %s", exc)
+        return None
+
+    try:
+        text = response.json().get("response", "")
+    except ValueError:
+        return None
+
     return _parse_response(text)
 
 

@@ -674,15 +674,19 @@ def analyze(
             )
 
         # 6c.5 Symbol-level attribution (optional, --symbols)
-        if symbols and llm and flows and provider == "anthropic":
+        if symbols and llm and flows:
             try:
                 from faultline.symbols.pipeline import enrich_with_symbols
-                console.print("[blue]Attributing symbols to flows...[/blue]")
+                console.print(
+                    f"[blue]Attributing symbols to flows (provider={provider})...[/blue]"
+                )
                 enrich_with_symbols(
                     feature_map=feature_map,
                     signatures=signatures or {},
+                    provider=provider,
                     api_key=api_key,
                     model=model,
+                    ollama_host=ollama_url,
                 )
                 enriched_flows = sum(
                     len([fl for fl in f.flows if fl.symbol_attributions])
@@ -1786,6 +1790,84 @@ def _trim_file_list(files: list[str], max_shown: int = 4) -> str:
     if len(files) <= max_shown:
         return ", ".join(files)
     return ", ".join(files[:max_shown]) + f", +{len(files) - max_shown} more"
+
+
+@app.command()
+def watch(
+    repo_path: str = typer.Argument(".", help="Repo to watch"),
+    debounce: float = typer.Option(
+        30.0, "--debounce",
+        help="Seconds of silence after last file change before refreshing (default 30)",
+    ),
+    daemon: bool = typer.Option(
+        False, "--daemon",
+        help="Run in background (fork + detach). Use `faultlines watch-stop` to kill.",
+    ),
+    map_path: Optional[str] = typer.Option(
+        None, "--map",
+        help="Explicit feature-map JSON. Defaults to latest in ~/.faultline/.",
+    ),
+    verbose: bool = typer.Option(True, "--verbose/--quiet", help="Log refresh events"),
+):
+    """
+    Watch a repo and auto-refresh the feature map on file changes.
+
+    Foreground by default (Ctrl-C to stop). Use --daemon to detach.
+    Only triggers metric refresh — no LLM calls, no cost.
+
+    Examples:
+        faultlines watch                         # foreground, current dir
+        faultlines watch /path/to/repo --daemon  # background
+        faultlines watch . --debounce 10         # react faster
+    """
+    from faultline.watch import run_watcher, start_daemon
+
+    if daemon:
+        try:
+            pid = start_daemon(repo_path, debounce_seconds=debounce, map_path=map_path)
+            console.print(f"[green]✓ Watcher started[/green] (pid {pid})")
+            console.print(f"[dim]Stop with: faultlines watch-stop {repo_path}[/dim]")
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+    else:
+        try:
+            run_watcher(
+                repo_path=repo_path,
+                debounce_seconds=debounce,
+                map_path=map_path,
+                verbose=verbose,
+            )
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+
+
+@app.command(name="watch-status")
+def watch_status(
+    repo_path: str = typer.Argument(".", help="Repo to check"),
+):
+    """Check whether a watcher daemon is running for this repo."""
+    from faultline.watch import watcher_status
+    status = watcher_status(repo_path)
+    if status.running:
+        import datetime as _dt
+        started = _dt.datetime.fromtimestamp(status.started_at or 0).strftime("%Y-%m-%d %H:%M")
+        console.print(f"[green]✓ Running[/green] (pid {status.pid}, started {started})")
+    else:
+        console.print("[yellow]Not running[/yellow]")
+
+
+@app.command(name="watch-stop")
+def watch_stop(
+    repo_path: str = typer.Argument(".", help="Repo whose watcher to stop"),
+):
+    """Stop a background watcher daemon."""
+    from faultline.watch import stop_daemon
+    if stop_daemon(repo_path):
+        console.print("[green]✓ Stopped[/green]")
+    else:
+        console.print("[yellow]No watcher running[/yellow]")
 
 
 @app.command()
