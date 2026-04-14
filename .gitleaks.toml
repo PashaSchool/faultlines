@@ -1,0 +1,30 @@
+# Gitleaks config for faultlines
+# See https://github.com/gitleaks/gitleaks/blob/master/README.md
+#
+# We inherit the default ruleset and just allow-list the placeholder
+# strings that appear in docstrings and error messages. Never put real
+# secrets here — this file is public.
+
+title = "faultlines gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore placeholders and docstring examples"
+regexes = [
+    # "sk-ant-..." is a doc placeholder, not a real key
+    '''sk-ant-\.\.\.''',
+    # CLI validation pattern, not a key
+    '''startswith\(['"]sk-ant-['"]''',
+    # Help text and docstrings referencing the key format
+    '''ANTHROPIC_API_KEY''',
+]
+paths = [
+    # These files contain only docs, examples, and regex validators
+    '''^faultline/llm/detector\.py$''',
+    '''^faultline/cli\.py$''',
+    '''^tests/''',
+    '''^README\.md$''',
+    '''^CHANGELOG\.md$''',
+]
