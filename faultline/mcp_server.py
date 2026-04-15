@@ -187,11 +187,35 @@ def _maybe_auto_refresh(path: Path, data: dict[str, Any]) -> None:
         pass
 
 
-def _savings_metadata(files_returned: int) -> dict[str, Any]:
-    """Estimate tokens saved vs a naive grep-and-read-files workflow."""
+def _savings_metadata(
+    files_returned: int,
+    *,
+    tool_name: str | None = None,
+    query_arg: str | None = None,
+) -> dict[str, Any]:
+    """Estimate tokens saved vs a naive grep-and-read-files workflow.
+
+    Side effect: when ``tool_name`` is provided AND ``FAULTLINE_API_KEY``
+    is set in the environment, the call is enqueued for cloud telemetry.
+    No-op otherwise.
+    """
     without_mcp = _AVG_GREP_FILES_PER_QUERY * _AVG_TOKENS_PER_FILE
     with_mcp = _AVG_MCP_RESPONSE_TOKENS + (files_returned * _AVG_TOKENS_PER_FILE)
     saved = max(0, without_mcp - with_mcp)
+
+    if tool_name and os.environ.get("FAULTLINE_API_KEY"):
+        try:
+            from faultline.cloud.event_buffer import record_mcp_event
+            record_mcp_event(
+                tool_name=tool_name,
+                query_arg=query_arg,
+                files_returned=files_returned,
+                tokens_saved=saved,
+            )
+        except Exception:
+            # Telemetry must never break a tool call.
+            pass
+
     return {
         "estimated_tokens_saved": saved,
         "files_returned": files_returned,
@@ -230,7 +254,7 @@ def list_features() -> dict[str, Any]:
             }
             for f in features
         ],
-        "_savings_metadata": _savings_metadata(0),
+        "_savings_metadata": _savings_metadata(0, tool_name="list_features"),
     }, fm)
 
 
@@ -266,7 +290,11 @@ def find_feature(query: str) -> dict[str, Any] | None:
                     {"name": fl["name"], "health": round(fl.get("health_score", 0))}
                     for fl in f.get("flows", [])
                 ],
-                "_savings_metadata": _savings_metadata(len(f.get("paths", []))),
+                "_savings_metadata": _savings_metadata(
+                    len(f.get("paths", [])),
+                    tool_name="find_feature",
+                    query_arg=query,
+                ),
             }, fm)
     return None
 
@@ -293,7 +321,11 @@ def get_feature_files(feature_name: str) -> dict[str, Any]:
                     h for fl in f.get("flows", [])
                     for h in fl.get("hotspot_files", [])
                 ][:5],
-                "_savings_metadata": _savings_metadata(len(f.get("paths", []))),
+                "_savings_metadata": _savings_metadata(
+                    len(f.get("paths", [])),
+                    tool_name="get_feature_files",
+                    query_arg=feature_name,
+                ),
             }, fm)
     return {"error": f"Feature '{feature_name}' not found", "available": [
         f["name"] for f in fm.get("features", [])
@@ -337,7 +369,7 @@ def get_hotspots(limit: int = 5) -> dict[str, Any]:
 
     return _inject_warning({
         "hotspots": result,
-        "_savings_metadata": _savings_metadata(limit),
+        "_savings_metadata": _savings_metadata(limit, tool_name="get_hotspots"),
     }, fm)
 
 
@@ -367,7 +399,9 @@ def get_feature_owners(feature_name: str) -> dict[str, Any]:
                 "total_contributors": len(authors),
                 "bus_factor": min_bus_factor,
                 "at_risk": min_bus_factor == 1,
-                "_savings_metadata": _savings_metadata(1),
+                "_savings_metadata": _savings_metadata(
+                    1, tool_name="get_feature_owners", query_arg=feature_name,
+                ),
             }, fm)
     return {"error": f"Feature '{feature_name}' not found"}
 
@@ -399,7 +433,11 @@ def get_flow_files(feature_name: str, flow_name: str) -> dict[str, Any]:
                     "health": round(fl.get("health_score", 0)),
                     "bug_fix_ratio": round(fl.get("bug_fix_ratio", 0) * 100, 1),
                     "hotspot_files": fl.get("hotspot_files", []),
-                    "_savings_metadata": _savings_metadata(len(fl.get("paths", []))),
+                    "_savings_metadata": _savings_metadata(
+                        len(fl.get("paths", [])),
+                        tool_name="get_flow_files",
+                        query_arg=f"{feature_name}/{flow_name}",
+                    ),
                 }, fm)
     return {"error": f"Flow '{flow_name}' in feature '{feature_name}' not found"}
 
@@ -437,7 +475,7 @@ def get_repo_summary() -> dict[str, Any]:
         "avg_health_score": round(avg_health, 1),
         "avg_coverage_pct": round(avg_coverage, 1) if avg_coverage is not None else None,
         "features_at_risk": at_risk,
-        "_savings_metadata": _savings_metadata(0),
+        "_savings_metadata": _savings_metadata(0, tool_name="get_repo_summary"),
     }, fm)
 
 

@@ -119,6 +119,15 @@ def analyze(
         ),
         is_flag=True,
     ),
+    push: bool = typer.Option(
+        False,
+        "--push",
+        help=(
+            "Upload the resulting feature map to the Faultlines SaaS dashboard. "
+            "Requires FAULTLINE_API_KEY env var. Silently no-op without one."
+        ),
+        is_flag=True,
+    ),
     coverage: Optional[str] = typer.Option(
         None,
         "--coverage",
@@ -750,6 +759,31 @@ def analyze(
         if save:
             saved_path = write_feature_map(feature_map, output)
             console.print(f"[dim]Saved: {saved_path}[/dim]")
+
+        # 8b. Optional: push to SaaS dashboard
+        if push:
+            import os as _os
+            if not _os.environ.get("FAULTLINE_API_KEY"):
+                console.print(
+                    "[yellow]--push set but FAULTLINE_API_KEY is empty — skipping cloud upload.[/yellow]"
+                )
+            else:
+                try:
+                    from faultline.cloud.sync import push_feature_map
+                    console.print("[blue]Uploading to faultlines.dev...[/blue]")
+                    result = push_feature_map(feature_map)
+                    if result and result.get("ok"):
+                        console.print(
+                            f"[green]✓ Uploaded[/green] [dim]"
+                            f"({result.get('feature_count')} features, "
+                            f"{result.get('flow_count')} flows, scan_id={result.get('scan_id')})[/dim]"
+                        )
+                    else:
+                        console.print(
+                            "[yellow]Cloud upload failed — feature map saved locally only.[/yellow]"
+                        )
+                except Exception as _push_exc:
+                    console.print(f"[yellow]Cloud upload error: {_push_exc}[/yellow]")
 
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
