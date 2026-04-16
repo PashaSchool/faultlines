@@ -67,6 +67,7 @@ class SymbolAttribution(BaseModel):
     line_ranges: list[tuple[int, int]]      # merged non-overlapping (start, end) spans
     attributed_lines: int                   # total lines across all ranges
     total_file_lines: int                   # total lines in the file
+    roles: dict[str, str] = {}              # {symbol_name: role}; role in {entry,handler,validator,data-fetch,state,loading-state,error-state,side-effect,ui-component,helper,type}
 
 
 class Feature(BaseModel):

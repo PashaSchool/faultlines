@@ -112,6 +112,7 @@ def _attach_feature_attributions(
         if not fs.feature_symbols:
             continue
         ranges = _resolve_ranges(fs.feature_symbols, fs.symbol_lines)
+        roles = {s: fs.symbol_roles.get(s, "type") for s in fs.feature_symbols}
         feature.shared_attributions.append(
             SymbolAttribution(
                 file_path=path,
@@ -119,6 +120,7 @@ def _attach_feature_attributions(
                 line_ranges=ranges,
                 attributed_lines=_sum_lines(ranges),
                 total_file_lines=fs.total_file_lines,
+                roles=roles,
             ),
         )
 
@@ -329,6 +331,7 @@ def _apply_mapping_to_flows(
                 continue
 
             ranges = _resolve_ranges(valid, fs.symbol_lines)
+            roles = {s: fs.symbol_roles.get(s, "helper") for s in valid}
             flow.symbol_attributions.append(
                 SymbolAttribution(
                     file_path=file_path,
@@ -336,6 +339,7 @@ def _apply_mapping_to_flows(
                     line_ranges=ranges,
                     attributed_lines=_sum_lines(ranges),
                     total_file_lines=fs.total_file_lines,
+                    roles=roles,
                 ),
             )
 

@@ -73,6 +73,7 @@ def find_symbols_in_flow(feature_name: str, flow_name: str) -> dict[str, Any]:
                         {
                             "file": a.get("file_path"),
                             "symbols": a.get("symbols", []),
+                            "roles": a.get("roles", {}),
                             "line_ranges": a.get("line_ranges", []),
                             "attributed_lines": a.get("attributed_lines", 0),
                             "total_file_lines": a.get("total_file_lines", 0),
@@ -137,6 +138,7 @@ def find_symbols_for_feature(feature_name: str) -> dict[str, Any]:
                 {
                     "file": a.get("file_path"),
                     "symbols": a.get("symbols", []),
+                    "roles": a.get("roles", {}),
                     "line_ranges": a.get("line_ranges", []),
                     "deeplinks": _build_deeplinks(
                         remote, a.get("file_path", ""), a.get("line_ranges", []),
