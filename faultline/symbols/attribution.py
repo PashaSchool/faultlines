@@ -59,21 +59,19 @@ def attribute_symbols_to_flows(
     if not feature.flows:
         return
 
+    feature_file_symbols: dict[str, FileSymbols] = {}
     relevant_symbols: dict[str, list[str]] = {}
-    feature_only_symbols: dict[str, list[str]] = {}
 
     for path in feature.paths:
         fs = file_symbols.get(path)
         if not fs:
             continue
+        feature_file_symbols[path] = fs
         if fs.flow_symbols:
             relevant_symbols[path] = fs.flow_symbols
-        if fs.feature_symbols:
-            feature_only_symbols[path] = fs.feature_symbols
 
-    # Attribute types/interfaces/enums to feature level directly.
-    if feature_only_symbols:
-        _attach_feature_attributions(feature, feature_only_symbols)
+    # Attribute types/interfaces/enums to feature level directly (no LLM).
+    _attach_feature_attributions(feature, feature_file_symbols)
 
     if not relevant_symbols:
         return
@@ -102,24 +100,25 @@ def attribute_symbols_to_flows(
     if not mapping:
         return
 
-    _apply_mapping_to_flows(feature, relevant_symbols, mapping)
+    _apply_mapping_to_flows(feature, feature_file_symbols, mapping)
 
 
 def _attach_feature_attributions(
     feature: Feature,
-    feature_symbols: dict[str, list[str]],
+    file_symbols: dict[str, FileSymbols],
 ) -> None:
     """Adds feature-level shared_attributions for types/interfaces."""
-    for path, symbols in feature_symbols.items():
-        if not symbols:
+    for path, fs in file_symbols.items():
+        if not fs.feature_symbols:
             continue
+        ranges = _resolve_ranges(fs.feature_symbols, fs.symbol_lines)
         feature.shared_attributions.append(
             SymbolAttribution(
                 file_path=path,
-                symbols=symbols,
-                line_ranges=[],
-                attributed_lines=0,
-                total_file_lines=0,
+                symbols=fs.feature_symbols,
+                line_ranges=ranges,
+                attributed_lines=_sum_lines(ranges),
+                total_file_lines=fs.total_file_lines,
             ),
         )
 
@@ -297,7 +296,7 @@ def _parse_response(text: str) -> dict[str, list[dict[str, Any]]] | None:
 
 def _apply_mapping_to_flows(
     feature: Feature,
-    relevant_symbols: dict[str, list[str]],
+    file_symbols: dict[str, FileSymbols],
     mapping: dict[str, list[dict[str, Any]]],
 ) -> None:
     """Turn the LLM mapping into SymbolAttribution objects on each flow."""
@@ -316,21 +315,55 @@ def _apply_mapping_to_flows(
             if not file_path or not isinstance(symbols, list):
                 continue
 
+            fs = file_symbols.get(file_path)
+            if fs is None:
+                continue
+
             # Only keep symbols that were actually in the input
             # (prevents hallucinations).
             valid = [
                 s for s in symbols
-                if isinstance(s, str) and s in relevant_symbols.get(file_path, [])
+                if isinstance(s, str) and s in fs.flow_symbols
             ]
             if not valid:
                 continue
 
+            ranges = _resolve_ranges(valid, fs.symbol_lines)
             flow.symbol_attributions.append(
                 SymbolAttribution(
                     file_path=file_path,
                     symbols=valid,
-                    line_ranges=[],
-                    attributed_lines=0,
-                    total_file_lines=0,
+                    line_ranges=ranges,
+                    attributed_lines=_sum_lines(ranges),
+                    total_file_lines=fs.total_file_lines,
                 ),
             )
+
+
+def _resolve_ranges(
+    symbols: list[str],
+    symbol_lines: dict[str, tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Look up line ranges for the given symbols and merge overlaps.
+
+    Ranges are sorted by start line and adjacent/overlapping spans are
+    merged so a flow attributing five contiguous methods reports one
+    range, not five — this keeps GitHub deeplinks tidy.
+    """
+    raw = [symbol_lines[s] for s in symbols if s in symbol_lines]
+    if not raw:
+        return []
+    raw.sort(key=lambda r: r[0])
+    merged: list[tuple[int, int]] = [raw[0]]
+    for start, end in raw[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end + 1:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _sum_lines(ranges: list[tuple[int, int]]) -> int:
+    """Total lines covered by a (already-merged) list of ranges."""
+    return sum(end - start + 1 for start, end in ranges)

@@ -1,12 +1,13 @@
 """Symbol extraction helpers.
 
 Wraps the existing ast_extractor to produce a clean per-file symbol
-listing, split into flow-eligible and feature-only (types/interfaces).
+listing, split into flow-eligible and feature-only (types/interfaces),
+with per-symbol line ranges so attribution can deep-link to exact code.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from faultline.analyzer.ast_extractor import FileSignature
 
@@ -18,10 +19,17 @@ _FLOW_ELIGIBLE_KINDS = {"function", "class", "const"}
 
 @dataclass
 class FileSymbols:
-    """Symbols in a single file, split by attribution scope."""
+    """Symbols in a single file, split by attribution scope.
+
+    ``symbol_lines`` is the source of truth for SymbolAttribution.line_ranges
+    — the LLM never sees lines, it only emits names; ranges are looked up
+    here when applying the attribution back to the feature map.
+    """
     path: str
     flow_symbols: list[str]     # functions/classes/consts — can go to specific flows
     feature_symbols: list[str]  # types/interfaces/enums — feature-level only
+    symbol_lines: dict[str, tuple[int, int]] = field(default_factory=dict)
+    total_file_lines: int = 0
 
 
 def extract_file_symbols(signatures: dict[str, FileSignature]) -> dict[str, FileSymbols]:
@@ -38,8 +46,9 @@ def extract_file_symbols(signatures: dict[str, FileSignature]) -> dict[str, File
     for path, sig in signatures.items():
         flow_syms: list[str] = []
         feature_syms: list[str] = []
+        symbol_lines: dict[str, tuple[int, int]] = {}
 
-        # Use symbol_ranges (richer, has kind) when available.
+        # Use symbol_ranges (richer, has kind + line info) when available.
         if sig.symbol_ranges:
             for sym in sig.symbol_ranges:
                 if sym.kind in _FLOW_ELIGIBLE_KINDS:
@@ -47,15 +56,27 @@ def extract_file_symbols(signatures: dict[str, FileSignature]) -> dict[str, File
                 else:
                     # type, interface, enum, reexport
                     feature_syms.append(sym.name)
+                # Keep ranges for ALL kinds — feature-level attributions
+                # need them too (so dashboards can deep-link to a type def).
+                symbol_lines[sym.name] = (sym.start_line, sym.end_line)
         else:
             # Python fallback — no symbol_ranges yet. Treat all exports
             # as flow-eligible since AST doesn't separate them.
             flow_syms = list(sig.exports)
 
+        # Total file lines for "x of y lines attributed" stats.
+        total_lines = 0
+        if sig.source:
+            total_lines = sig.source.count("\n") + 1
+        elif symbol_lines:
+            total_lines = max((end for _, end in symbol_lines.values()), default=0)
+
         result[path] = FileSymbols(
             path=path,
             flow_symbols=_dedupe(flow_syms),
             feature_symbols=_dedupe(feature_syms),
+            symbol_lines=symbol_lines,
+            total_file_lines=total_lines,
         )
 
     return result

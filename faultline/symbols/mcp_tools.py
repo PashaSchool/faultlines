@@ -12,6 +12,33 @@ from typing import Any
 from faultline.mcp_server import mcp, _load_map, _inject_warning, _savings_metadata
 
 
+def _build_deeplinks(
+    remote_url: str,
+    file_path: str,
+    line_ranges: list[Any],
+) -> list[str]:
+    """Build GitHub blob URLs for each line range.
+
+    Returns ``["{remote}/blob/HEAD/{file}#L{start}-L{end}", ...]``.
+    Falls back to a bare file path when remote_url is empty (e.g.
+    local-only scans). Range items are accepted as ``[start, end]``
+    or ``(start, end)`` — JSON sends lists, Python sends tuples.
+    """
+    if not file_path:
+        return []
+    base = remote_url.rstrip("/") if remote_url else ""
+    out: list[str] = []
+    for rng in line_ranges or []:
+        if not isinstance(rng, (list, tuple)) or len(rng) != 2:
+            continue
+        start, end = rng[0], rng[1]
+        if base:
+            out.append(f"{base}/blob/HEAD/{file_path}#L{start}-L{end}")
+        else:
+            out.append(f"{file_path}#L{start}-L{end}")
+    return out
+
+
 @mcp.tool()
 def find_symbols_in_flow(feature_name: str, flow_name: str) -> dict[str, Any]:
     """Get precise symbols (functions, classes) that belong to a flow.
@@ -37,6 +64,7 @@ def find_symbols_in_flow(feature_name: str, flow_name: str) -> dict[str, Any]:
 
             attributions = fl.get("symbol_attributions", [])
             if attributions:
+                remote = fm.get("remote_url", "")
                 return _inject_warning({
                     "feature": feature_name,
                     "flow": flow_name,
@@ -45,11 +73,17 @@ def find_symbols_in_flow(feature_name: str, flow_name: str) -> dict[str, Any]:
                         {
                             "file": a.get("file_path"),
                             "symbols": a.get("symbols", []),
+                            "line_ranges": a.get("line_ranges", []),
+                            "attributed_lines": a.get("attributed_lines", 0),
+                            "total_file_lines": a.get("total_file_lines", 0),
+                            "deeplinks": _build_deeplinks(
+                                remote, a.get("file_path", ""), a.get("line_ranges", []),
+                            ),
                         }
                         for a in attributions if a.get("symbols")
                     ],
                     "fallback_files": fl.get("paths", []),
-                    "hint": "Read only the symbols listed. Use fallback_files if you need full context.",
+                    "hint": "Read only the symbols listed. Use deeplinks for direct GitHub navigation. Fall back to fallback_files when full context is needed.",
                     "_savings_metadata": _savings_metadata(
                         sum(len(a.get("symbols", [])) for a in attributions)
                     ),
@@ -95,6 +129,7 @@ def find_symbols_for_feature(feature_name: str) -> dict[str, Any]:
             continue
 
         shared = f.get("shared_attributions", [])
+        remote = fm.get("remote_url", "")
         return _inject_warning({
             "feature": feature_name,
             "description": f.get("description"),
@@ -102,6 +137,10 @@ def find_symbols_for_feature(feature_name: str) -> dict[str, Any]:
                 {
                     "file": a.get("file_path"),
                     "symbols": a.get("symbols", []),
+                    "line_ranges": a.get("line_ranges", []),
+                    "deeplinks": _build_deeplinks(
+                        remote, a.get("file_path", ""), a.get("line_ranges", []),
+                    ),
                 }
                 for a in shared if a.get("symbols")
             ],

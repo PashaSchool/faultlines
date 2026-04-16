@@ -103,51 +103,108 @@ class TestParseResponse:
         assert _parse_response("[1, 2, 3]") is None
 
 
+def _file_syms(
+    path: str,
+    flow: list[str],
+    feature: list[str] | None = None,
+    lines: dict[str, tuple[int, int]] | None = None,
+    total: int = 0,
+) -> FileSymbols:
+    return FileSymbols(
+        path=path,
+        flow_symbols=flow,
+        feature_symbols=feature or [],
+        symbol_lines=lines or {},
+        total_file_lines=total,
+    )
+
+
 class TestApplyMappingToFlows:
     def test_attaches_valid_symbols(self) -> None:
         feature = _feature_with_flows()
-        relevant = {"src/stripe.ts": ["charge", "refund", "StripeClient"]}
+        fs = {
+            "src/stripe.ts": _file_syms(
+                "src/stripe.ts",
+                ["charge", "refund", "StripeClient"],
+                lines={
+                    "charge": (10, 45),
+                    "refund": (50, 80),
+                    "StripeClient": (90, 120),
+                },
+                total=130,
+            ),
+        }
         mapping = {
             "checkout-flow": [{"file": "src/stripe.ts", "symbols": ["charge"]}],
             "refund-flow": [{"file": "src/stripe.ts", "symbols": ["refund"]}],
         }
-        _apply_mapping_to_flows(feature, relevant, mapping)
+        _apply_mapping_to_flows(feature, fs, mapping)
 
         checkout = feature.flows[0]
         refund = feature.flows[1]
-        assert len(checkout.symbol_attributions) == 1
         assert checkout.symbol_attributions[0].symbols == ["charge"]
-        assert len(refund.symbol_attributions) == 1
-        assert refund.symbol_attributions[0].symbols == ["refund"]
+        assert checkout.symbol_attributions[0].line_ranges == [(10, 45)]
+        assert checkout.symbol_attributions[0].attributed_lines == 36
+        assert checkout.symbol_attributions[0].total_file_lines == 130
+        assert refund.symbol_attributions[0].line_ranges == [(50, 80)]
 
     def test_rejects_hallucinated_symbols(self) -> None:
         feature = _feature_with_flows()
-        relevant = {"src/stripe.ts": ["charge"]}
+        fs = {"src/stripe.ts": _file_syms("src/stripe.ts", ["charge"])}
         mapping = {
             "checkout-flow": [{"file": "src/stripe.ts", "symbols": ["fake_symbol"]}],
         }
-        _apply_mapping_to_flows(feature, relevant, mapping)
+        _apply_mapping_to_flows(feature, fs, mapping)
         assert len(feature.flows[0].symbol_attributions) == 0
 
     def test_same_symbol_can_attribute_to_multiple_flows(self) -> None:
         feature = _feature_with_flows()
-        relevant = {"src/stripe.ts": ["validatePayment"]}
+        fs = {
+            "src/stripe.ts": _file_syms(
+                "src/stripe.ts",
+                ["validatePayment"],
+                lines={"validatePayment": (5, 25)},
+            ),
+        }
         mapping = {
             "checkout-flow": [{"file": "src/stripe.ts", "symbols": ["validatePayment"]}],
             "refund-flow": [{"file": "src/stripe.ts", "symbols": ["validatePayment"]}],
         }
-        _apply_mapping_to_flows(feature, relevant, mapping)
+        _apply_mapping_to_flows(feature, fs, mapping)
         assert feature.flows[0].symbol_attributions[0].symbols == ["validatePayment"]
+        assert feature.flows[0].symbol_attributions[0].line_ranges == [(5, 25)]
         assert feature.flows[1].symbol_attributions[0].symbols == ["validatePayment"]
 
     def test_skips_unknown_flow(self) -> None:
         feature = _feature_with_flows()
-        relevant = {"src/stripe.ts": ["charge"]}
+        fs = {"src/stripe.ts": _file_syms("src/stripe.ts", ["charge"])}
         mapping = {
             "nonexistent-flow": [{"file": "src/stripe.ts", "symbols": ["charge"]}],
         }
-        _apply_mapping_to_flows(feature, relevant, mapping)
+        _apply_mapping_to_flows(feature, fs, mapping)
         assert all(len(fl.symbol_attributions) == 0 for fl in feature.flows)
+
+    def test_merges_adjacent_ranges(self) -> None:
+        feature = _feature_with_flows()
+        fs = {
+            "src/stripe.ts": _file_syms(
+                "src/stripe.ts",
+                ["a", "b", "c"],
+                lines={
+                    "a": (10, 20),
+                    "b": (21, 30),  # adjacent → merge with a
+                    "c": (40, 50),  # gap → separate
+                },
+                total=60,
+            ),
+        }
+        mapping = {
+            "checkout-flow": [{"file": "src/stripe.ts", "symbols": ["a", "b", "c"]}],
+        }
+        _apply_mapping_to_flows(feature, fs, mapping)
+        attr = feature.flows[0].symbol_attributions[0]
+        assert attr.line_ranges == [(10, 30), (40, 50)]
+        assert attr.attributed_lines == 32  # (30-10+1) + (50-40+1)
 
 
 class TestAttributeSymbolsToFlows:
@@ -173,6 +230,8 @@ class TestAttributeSymbolsToFlows:
                 path="src/types.ts",
                 flow_symbols=[],
                 feature_symbols=["PaymentMethod", "Money"],
+                symbol_lines={"PaymentMethod": (1, 4), "Money": (6, 9)},
+                total_file_lines=20,
             ),
         }
         with patch("faultline.symbols.attribution._ask_llm") as mock_llm:
@@ -180,7 +239,11 @@ class TestAttributeSymbolsToFlows:
             attribute_symbols_to_flows(feature, file_syms)
 
         assert len(feature.shared_attributions) == 1
-        assert feature.shared_attributions[0].symbols == ["PaymentMethod", "Money"]
+        attr = feature.shared_attributions[0]
+        assert attr.symbols == ["PaymentMethod", "Money"]
+        assert attr.line_ranges == [(1, 4), (6, 9)]
+        assert attr.attributed_lines == 8
+        assert attr.total_file_lines == 20
 
     def test_full_flow_with_mocked_llm(self) -> None:
         feature = _feature_with_flows()
