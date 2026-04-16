@@ -109,6 +109,25 @@ def analyze(
         help="Detect user-facing flows within features (requires --llm)",
         is_flag=True,
     ),
+    symbols: bool = typer.Option(
+        False,
+        "--symbols",
+        help=(
+            "Attribute individual functions/classes to specific flows via LLM. "
+            "Makes MCP responses return precise symbols instead of whole files "
+            "(requires --llm --flows)."
+        ),
+        is_flag=True,
+    ),
+    push: bool = typer.Option(
+        False,
+        "--push",
+        help=(
+            "Upload the resulting feature map to the Faultlines SaaS dashboard. "
+            "Requires FAULTLINE_API_KEY env var. Silently no-op without one."
+        ),
+        is_flag=True,
+    ),
     coverage: Optional[str] = typer.Option(
         None,
         "--coverage",
@@ -401,7 +420,7 @@ def analyze(
                     if provider == "ollama":
                         pkg_mapping = detect_features_ollama(
                             pkg_files, model=model or "llama3.1:8b",
-                            ollama_url=ollama_url, path_prefix="",
+                            host=ollama_url, path_prefix="",
                             signatures=pkg_sigs or None,
                         )
                     else:
@@ -663,6 +682,39 @@ def analyze(
                 e2e_anchors=e2e_anchors,
             )
 
+        # 6c.5 Symbol-level attribution (optional, --symbols)
+        if symbols and llm and flows:
+            try:
+                from faultline.symbols.pipeline import enrich_with_symbols
+                console.print(
+                    f"[blue]Attributing symbols to flows (provider={provider})...[/blue]"
+                )
+                enrich_with_symbols(
+                    feature_map=feature_map,
+                    signatures=signatures or {},
+                    provider=provider,
+                    api_key=api_key,
+                    model=model,
+                    ollama_host=ollama_url,
+                )
+                enriched_flows = sum(
+                    len([fl for fl in f.flows if fl.symbol_attributions])
+                    for f in feature_map.features
+                )
+                total_flows = sum(len(f.flows) for f in feature_map.features)
+                console.print(
+                    f"[dim]Symbol attribution: {enriched_flows}/{total_flows} flows enriched[/dim]"
+                )
+            except Exception as _exc:
+                console.print(
+                    f"[yellow]Symbol attribution failed — falling back to file-level[/yellow] "
+                    f"[dim]({_exc})[/dim]"
+                )
+        elif symbols and not (llm and flows):
+            console.print(
+                "[yellow]--symbols requires --llm --flows. Skipping.[/yellow]"
+            )
+
         # 6d. Analytics integration (optional)
         import os
         _posthog_key = posthog_key or os.environ.get("POSTHOG_API_KEY")
@@ -684,10 +736,54 @@ def analyze(
         # 7. Print the report
         print_report(feature_map, impact_scores=impact_scores)
 
+        # 7b. Stamp cache metadata (git HEAD + content hashes) for incremental refresh
+        try:
+            from faultline.cache.hashing import hash_files
+            import subprocess as _sp
+            try:
+                head_sha = _sp.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(repo.working_tree_dir), text=True, timeout=5,
+                ).strip()
+                feature_map.last_scanned_sha = head_sha
+            except Exception:
+                pass
+            all_tracked = sorted({
+                p for f in feature_map.features for p in f.paths
+            })
+            feature_map.file_hashes = hash_files(all_tracked, str(repo.working_tree_dir))
+        except Exception as _hash_exc:
+            console.print(f"[dim]Cache metadata skipped: {_hash_exc}[/dim]")
+
         # 8. Save to disk
         if save:
             saved_path = write_feature_map(feature_map, output)
             console.print(f"[dim]Saved: {saved_path}[/dim]")
+
+        # 8b. Optional: push to SaaS dashboard
+        if push:
+            import os as _os
+            if not _os.environ.get("FAULTLINE_API_KEY"):
+                console.print(
+                    "[yellow]--push set but FAULTLINE_API_KEY is empty — skipping cloud upload.[/yellow]"
+                )
+            else:
+                try:
+                    from faultline.cloud.sync import push_feature_map
+                    console.print("[blue]Uploading to faultlines.dev...[/blue]")
+                    result = push_feature_map(feature_map)
+                    if result and result.get("ok"):
+                        console.print(
+                            f"[green]✓ Uploaded[/green] [dim]"
+                            f"({result.get('feature_count')} features, "
+                            f"{result.get('flow_count')} flows, scan_id={result.get('scan_id')})[/dim]"
+                        )
+                    else:
+                        console.print(
+                            "[yellow]Cloud upload failed — feature map saved locally only.[/yellow]"
+                        )
+                except Exception as _push_exc:
+                    console.print(f"[yellow]Cloud upload error: {_push_exc}[/yellow]")
 
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -950,11 +1046,40 @@ def _apply_feature_coverage(
                 continue
             # Try matching with and without path_prefix
             full_path = f"{path_prefix}{file_path}" if path_prefix else file_path
-            pct = coverage_data.get(full_path) or coverage_data.get(file_path)
+            pct = _match_coverage(coverage_data, file_path, full_path)
             if pct is not None:
                 coverages.append(pct)
         if coverages:
             feature.coverage_pct = round(sum(coverages) / len(coverages), 1)
+
+        # Apply coverage to flows within this feature
+        for flow in feature.flows:
+            flow_coverages = []
+            for file_path in flow.paths:
+                if _is_test_file(file_path):
+                    continue
+                full_path = f"{path_prefix}{file_path}" if path_prefix else file_path
+                pct = _match_coverage(coverage_data, file_path, full_path)
+                if pct is not None:
+                    flow_coverages.append(pct)
+            if flow_coverages:
+                flow.coverage_pct = round(sum(flow_coverages) / len(flow_coverages), 1)
+
+
+def _match_coverage(
+    coverage_data: dict[str, float],
+    file_path: str,
+    full_path: str,
+) -> float | None:
+    """Match a file against coverage data with flexible path matching."""
+    pct = coverage_data.get(full_path) or coverage_data.get(file_path)
+    if pct is not None:
+        return pct
+    # Fuzzy suffix match for mismatched prefixes
+    for cov_path, cov_pct in coverage_data.items():
+        if cov_path.endswith(file_path) or file_path.endswith(cov_path.lstrip("/")):
+            return cov_pct
+    return None
 
 
 def _detect_flows(
@@ -1505,6 +1630,328 @@ def evolve(
     output_path = output or None
     saved = write_feature_map(updated, output_path)
     console.print(f"\n[green]Saved:[/green] {saved}")
+
+
+@app.command()
+def refresh(
+    repo_path: str = typer.Argument(".", help="Repo to refresh (must have a prior scan in ~/.faultline/)"),
+    map_path: Optional[str] = typer.Option(
+        None, "--map",
+        help="Path to existing feature-map JSON. Defaults to the most recent ~/.faultline/feature-map-*.json",
+    ),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o",
+        help="Where to write the refreshed feature map. Defaults to ~/.faultline/ with a new timestamp.",
+    ),
+    check_only: bool = typer.Option(
+        False, "--check",
+        help="Report freshness without writing a refreshed map.",
+    ),
+    detect_new: bool = typer.Option(
+        False, "--detect-new",
+        help=(
+            "After refresh, classify orphan files (not in any feature) via LLM. "
+            "Proposes extensions of existing features or entirely new features. "
+            "Requires ANTHROPIC_API_KEY."
+        ),
+    ),
+    refresh_symbols: bool = typer.Option(
+        False, "--refresh-symbols",
+        help=(
+            "Update symbol-level attributions for flows: clean up removed "
+            "symbols and re-attribute newly added ones. Body-only changes "
+            "are preserved. Requires ANTHROPIC_API_KEY only when new symbols "
+            "appear."
+        ),
+    ),
+    auto_apply: bool = typer.Option(
+        False, "--auto-apply",
+        help="With --detect-new, automatically apply high-confidence proposals to the map.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key",
+        help="Anthropic API key for --detect-new (defaults to ANTHROPIC_API_KEY env var)",
+    ),
+):
+    """
+    Incrementally update a feature map to match the current git HEAD.
+
+    Runs the existing analyzer/incremental.py pipeline (no LLM calls)
+    and updates content/symbol hashes. Orders of magnitude cheaper
+    than a full --llm scan and preserves flow + symbol attributions
+    on untouched features.
+
+    Examples:
+        faultlines refresh
+        faultlines refresh /path/to/repo --check
+        faultlines refresh . --output latest.json
+    """
+    import json as _json
+    from faultline.cache.refresh import refresh_feature_map
+    from faultline.cache.freshness import check_freshness
+    from faultline.models.types import FeatureMap
+    from faultline.output.writer import write_feature_map
+
+    # Locate the map to refresh
+    if map_path:
+        map_file = Path(map_path).expanduser()
+    else:
+        home = Path.home() / ".faultline"
+        candidates = sorted(home.glob("feature-map-*.json"))
+        if not candidates:
+            console.print(
+                "[red]No feature map found.[/red] "
+                "Run `faultlines analyze . --llm --flows` first."
+            )
+            raise typer.Exit(1)
+        map_file = candidates[-1]
+
+    if not map_file.exists():
+        console.print(f"[red]Map not found:[/red] {map_file}")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Loading:[/dim] {map_file}")
+    fm = FeatureMap.model_validate_json(map_file.read_text())
+
+    if check_only:
+        report = check_freshness(fm, repo_path)
+        if not report.is_stale:
+            console.print("[green]✓ Feature map is up to date with HEAD[/green]")
+        else:
+            console.print(
+                f"[yellow]Stale:[/yellow] {report.commits_behind} commit(s) behind. "
+                f"{report.changed_files_count} file(s) changed. "
+                f"{'New files detected.' if report.has_new_files else ''}"
+            )
+        return
+
+    result = refresh_feature_map(fm, repo_path)
+
+    if not result.freshness_before.is_stale and not detect_new and not refresh_symbols:
+        console.print("[green]✓ Already up to date — no refresh needed[/green]")
+        return
+
+    updated_map = result.updated_map
+
+    # Symbol-level incremental (opt-in)
+    if refresh_symbols:
+        import os as _os
+        _api_key = api_key or _os.environ.get("ANTHROPIC_API_KEY")
+        from faultline.cache.symbols import refresh_symbol_attributions
+        console.print("[blue]Refreshing symbol attributions...[/blue]")
+        sym_report = refresh_symbol_attributions(
+            feature_map=updated_map,
+            repo_path=repo_path,
+            api_key=_api_key,
+        )
+        console.print(f"[dim]{sym_report.summary()}[/dim]")
+        if sym_report.symbols_added and not _api_key:
+            console.print(
+                "[yellow]New symbols detected but no ANTHROPIC_API_KEY — "
+                "re-attribution skipped. Existing attributions preserved.[/yellow]"
+            )
+
+    # Orphan classification (opt-in, LLM-based)
+    if detect_new and result.orphan_files:
+        console.print(
+            f"[blue]Classifying {len(result.orphan_files)} orphan file(s)...[/blue]"
+        )
+        from faultline.cache.discovery import discover_from_orphans, apply_report
+        report = discover_from_orphans(
+            orphan_files=result.orphan_files,
+            feature_map=updated_map,
+            api_key=api_key,
+        )
+        console.print(f"[dim]{report.summary()}[/dim]")
+
+        # Pretty-print proposals
+        if report.extensions:
+            console.print("\n[bold]Extensions of existing features:[/bold]")
+            for p in report.extensions:
+                files_str = _trim_file_list(p.files)
+                console.print(
+                    f"  [green]→[/green] [bold]{p.extends_feature}[/bold] "
+                    f"gains {len(p.files)} file(s) "
+                    f"[dim]({p.confidence}, {p.reason})[/dim]"
+                )
+                console.print(f"    {files_str}")
+
+        if report.new_features:
+            console.print("\n[bold]Candidate new features:[/bold]")
+            for p in report.new_features:
+                files_str = _trim_file_list(p.files)
+                console.print(
+                    f"  [cyan]+[/cyan] [bold]{p.new_feature_name}[/bold] "
+                    f"({len(p.files)} files, {p.confidence})"
+                )
+                if p.new_feature_description:
+                    console.print(f"    [dim]{p.new_feature_description}[/dim]")
+                console.print(f"    {files_str}")
+
+        if auto_apply:
+            applied = apply_report(updated_map, report, only_high_confidence=True)
+            console.print(
+                f"\n[green]✓ Auto-applied {applied} high-confidence proposal(s)[/green]"
+            )
+        elif report.extensions or report.new_features:
+            console.print(
+                "\n[dim]Review above. Re-run with --detect-new --auto-apply to apply "
+                "high-confidence proposals, or run a full `faultlines analyze` for a "
+                "fresh scan.[/dim]"
+            )
+
+    # Save updated map
+    saved_path = write_feature_map(updated_map, output)
+
+    console.print(f"\n[green]✓ Refresh complete[/green]")
+    console.print(f"  Commits behind before: {result.freshness_before.commits_behind}")
+    console.print(f"  Files modified: {result.files_truly_modified}")
+    console.print(f"  Files added: {result.files_added}")
+    console.print(f"  Files removed: {result.files_removed}")
+    console.print(f"  LLM calls saved: ~{result.llm_calls_saved}")
+    if result.orphan_files and not detect_new:
+        console.print(
+            f"  [yellow]⚠ {len(result.orphan_files)} orphan file(s) not mapped to any feature.[/yellow]"
+        )
+        console.print(
+            f"    Run `faultlines refresh --detect-new` to classify them via LLM."
+        )
+    console.print(f"\n[dim]Saved:[/dim] {saved_path}")
+
+
+def _trim_file_list(files: list[str], max_shown: int = 4) -> str:
+    """Format a file list for terminal display."""
+    if len(files) <= max_shown:
+        return ", ".join(files)
+    return ", ".join(files[:max_shown]) + f", +{len(files) - max_shown} more"
+
+
+@app.command()
+def watch(
+    repo_path: str = typer.Argument(".", help="Repo to watch"),
+    debounce: float = typer.Option(
+        30.0, "--debounce",
+        help="Seconds of silence after last file change before refreshing (default 30)",
+    ),
+    daemon: bool = typer.Option(
+        False, "--daemon",
+        help="Run in background (fork + detach). Use `faultlines watch-stop` to kill.",
+    ),
+    map_path: Optional[str] = typer.Option(
+        None, "--map",
+        help="Explicit feature-map JSON. Defaults to latest in ~/.faultline/.",
+    ),
+    verbose: bool = typer.Option(True, "--verbose/--quiet", help="Log refresh events"),
+):
+    """
+    Watch a repo and auto-refresh the feature map on file changes.
+
+    Foreground by default (Ctrl-C to stop). Use --daemon to detach.
+    Only triggers metric refresh — no LLM calls, no cost.
+
+    Examples:
+        faultlines watch                         # foreground, current dir
+        faultlines watch /path/to/repo --daemon  # background
+        faultlines watch . --debounce 10         # react faster
+    """
+    from faultline.watch import run_watcher, start_daemon
+
+    if daemon:
+        try:
+            pid = start_daemon(repo_path, debounce_seconds=debounce, map_path=map_path)
+            console.print(f"[green]✓ Watcher started[/green] (pid {pid})")
+            console.print(f"[dim]Stop with: faultlines watch-stop {repo_path}[/dim]")
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+    else:
+        try:
+            run_watcher(
+                repo_path=repo_path,
+                debounce_seconds=debounce,
+                map_path=map_path,
+                verbose=verbose,
+            )
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+
+
+@app.command(name="watch-status")
+def watch_status(
+    repo_path: str = typer.Argument(".", help="Repo to check"),
+):
+    """Check whether a watcher daemon is running for this repo."""
+    from faultline.watch import watcher_status
+    status = watcher_status(repo_path)
+    if status.running:
+        import datetime as _dt
+        started = _dt.datetime.fromtimestamp(status.started_at or 0).strftime("%Y-%m-%d %H:%M")
+        console.print(f"[green]✓ Running[/green] (pid {status.pid}, started {started})")
+    else:
+        console.print("[yellow]Not running[/yellow]")
+
+
+@app.command(name="watch-stop")
+def watch_stop(
+    repo_path: str = typer.Argument(".", help="Repo whose watcher to stop"),
+):
+    """Stop a background watcher daemon."""
+    from faultline.watch import stop_daemon
+    if stop_daemon(repo_path):
+        console.print("[green]✓ Stopped[/green]")
+    else:
+        console.print("[yellow]No watcher running[/yellow]")
+
+
+@app.command()
+def pull(
+    repo: Optional[str] = typer.Argument(
+        None,
+        help="Repo slug (defaults to current directory's folder name). Example: 'soc0'",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Where to save the merged feature map. Default: ~/.faultline/feature-map-<slug>-cloud.json",
+    ),
+):
+    """Pull the latest scan for a repo with user overrides applied.
+
+    Overrides include custom feature names, aliases, and labels set in the
+    dashboard. Requires FAULTLINE_API_KEY. MCP then matches queries
+    against those overrides — if the team calls it 'labels', AI finds it
+    under 'labels' even though the LLM originally named it 'tags'.
+    """
+    import json
+    import os
+    import re
+    from faultline.cloud.sync import pull_feature_map
+
+    if repo is None:
+        repo = Path.cwd().name
+    slug = re.sub(r"[^a-z0-9]+", "-", repo.lower())[:60]
+
+    if not os.environ.get("FAULTLINE_API_KEY"):
+        rprint("[red]FAULTLINE_API_KEY not set.[/red] Create a key at your dashboard → Settings → API keys.")
+        raise typer.Exit(code=1)
+
+    rprint(f"Pulling latest scan for [bold]{slug}[/bold]…")
+    data = pull_feature_map(slug)
+    if data is None:
+        rprint(f"[yellow]No scan found for '{slug}'.[/yellow] Run `faultlines analyze . --push` first.")
+        raise typer.Exit(code=1)
+
+    target = output or (Path.home() / ".faultline" / f"feature-map-{slug}-cloud.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2))
+
+    features = data.get("features", [])
+    applied = data.get("_meta", {}).get("overrides_applied", 0)
+    renamed = sum(1 for f in features if f.get("display_name") and f["display_name"] != f.get("original_name", f.get("name")))
+    rprint(f"[green]✓[/green] Saved {len(features)} features to {target}")
+    rprint(f"  {applied} override(s) available · {renamed} renamed")
 
 
 @app.command()

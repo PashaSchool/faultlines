@@ -40,16 +40,23 @@ dependencies = [
 ollama = ["ollama>=0.4.0"]
 deepseek = ["openai>=1.0.0"]
 analytics = ["httpx>=0.27.0"]
+mcp = ["mcp>=1.0.0"]
+watch = ["watchdog>=4.0.0"]
+trace = [
+    "tree-sitter>=0.23.0",
+    "tree-sitter-typescript>=0.23.0",
+    "tree-sitter-javascript>=0.23.0",
+]
 
 [project.urls]
 Homepage = "https://faultlines.dev"
-Repository = "https://github.com/PashaSchool/featuremap"
-Issues = "https://github.com/PashaSchool/featuremap/issues"
+Repository = "https://github.com/PashaSchool/faultlines"
+Issues = "https://github.com/PashaSchool/faultlines/issues"
 
 [project.scripts]
 faultlines = "faultline.cli:app"
+faultlines-mcp = "faultline.mcp_server:main"
 # Keep the old name as alias for backwards compat
-faultline = "faultline.cli:app"
 
 [tool.hatch.envs.default]
 dependencies = [
@@ -59,3 +66,45 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 test = "pytest tests/"
+
+[tool.hatch.build.targets.wheel]
+packages = ["faultline"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--cov=faultline",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=html:htmlcov",
+    "--cov-config=pyproject.toml",
+    "-q",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["faultline"]
+omit = [
+    "faultline/llm/detector.py",
+    "faultline/llm/deepseek_client.py",
+    "faultline/llm/flow_detector.py",
+    "faultline/cli.py",
+    "faultline/digest/*",
+    "faultline/integrations/*",
+    "faultline/output/reporter.py",
+    "faultline/analyzer/evolve.py",
+    "faultline/analyzer/incremental.py",
+    "faultline/analyzer/shared_files.py",
+]
+
+[tool.coverage.report]
+fail_under = 65
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+]
+precision = 1
+
+[tool.coverage.html]
+directory = "htmlcov"
