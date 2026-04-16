@@ -116,6 +116,18 @@ A flow is NOT a technical layer, data pattern, or code structure.
 9. If a file has API routes (GET/POST/PUT/DELETE), it is an entry point to a flow. \
    Group other files that serve the same route prefix into the same flow.
 
+10. CRUD COVERAGE — treat each CRUD operation as its own flow when the code shows \
+    it. Do NOT collapse a delete/destroy action into a "manage-X" flow; users \
+    treat "delete" as a distinct intention with its own confirmation, mutation, \
+    and error states. Specifically, emit separate flows for: \
+    - create-X / add-X (signals: POST routes, `Create*`, `Add*`, `useCreate*`, `New*Form`) \
+    - list-X / browse-X (signals: GET collection routes, `List*`, `*Table`, `*Index`) \
+    - view-X / open-X (signals: GET by-id routes, `*Detail`, `*View`, route params like `[id]`) \
+    - edit-X / update-X (signals: PUT/PATCH routes, `Edit*`, `Update*`, `*EditForm`, `useUpdate*`) \
+    - delete-X / remove-X (signals: DELETE routes, `Delete*`, `Remove*`, `confirmDelete*`, `useDelete*`, `ConfirmDialog` next to `Delete`) \
+    If you see multiple of these signals in one feature, you MUST emit each as a \
+    separate flow — do not merge them.
+
 ## Anti-patterns — NEVER use these flow name patterns
 
 BAD — technical layer names (describe code structure, not user actions):
@@ -327,7 +339,7 @@ def detect_flows_llm(
             logger.info("Deep flow detection found %d additional flows for '%s'", len(deep_flows), feature_name)
             phase1.extend(deep_flows)
 
-    return phase1
+    return _enrich_crud_gaps(phase1, feature_name, feature_files, signatures)
 
 
 def detect_flows_ollama(
@@ -379,7 +391,8 @@ def detect_flows_ollama(
             format=_FlowDetectionResponse.model_json_schema(),
         )
         parsed = _FlowDetectionResponse.model_validate_json(response.message.content)
-        return _filter_valid_files(parsed.flows, set(feature_files))
+        filtered = _filter_valid_files(parsed.flows, set(feature_files))
+        return _enrich_crud_gaps(filtered, feature_name, feature_files, signatures)
     except (ValidationError, Exception):
         return []
 
@@ -419,7 +432,8 @@ def detect_flows_deepseek(
     )
     if not parsed:
         return []
-    return _filter_valid_files(parsed.flows, set(feature_files))
+    filtered = _filter_valid_files(parsed.flows, set(feature_files))
+    return _enrich_crud_gaps(filtered, feature_name, feature_files, signatures)
 
 
 def _chunked_flow_detection(
@@ -704,6 +718,162 @@ def _filter_valid_files(
             )
 
     return _cap_flows(result)
+
+
+# ── CRUD-gap enrichment ────────────────────────────────────────────────────
+#
+# LLM flow detection sometimes collapses distinct CRUD operations into a
+# single "manage-X" flow or drops one entirely (most commonly delete —
+# delete comes late in a feature's life so it has few commits and is easy
+# to miss). We detect those gaps deterministically and synthesize a
+# placeholder flow so dashboards / MCP don't silently lose the intent.
+#
+# Precision > recall here: only emit a synthetic flow when the signal is
+# strong (route with matching HTTP verb, or filename containing an
+# unambiguous CRUD verb). Weak signals (e.g. a helper called `removeItem`
+# in an array util) are skipped — a false positive is worse than a miss
+# because it pollutes the feature map with fake flows.
+
+# Match verbs as tokens in any filename style (snake_case, kebab-case,
+# camelCase, PascalCase, dot.case). We tokenize once — splitting on
+# ``[._-]`` AND inserting separators at camelCase boundaries — then do a
+# token-equality check. This avoids the regex gymnastics that break on
+# ``DeleteTagButton`` (where there's no separator between "delete" and
+# "tag").
+_CRUD_FILENAME_VERBS: dict[str, set[str]] = {
+    "delete": {"delete", "remove", "destroy"},
+    "create": {"create", "add", "new"},
+    "update": {"edit", "update", "patch"},
+}
+
+
+def _tokenize_filename(stem: str) -> list[str]:
+    """Split a filename stem into lowercase tokens regardless of case style."""
+    # Insert separator at camelCase boundaries: DeleteTagButton → Delete-Tag-Button
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "-", stem)
+    # Normalize all separators to '-' then split
+    parts = re.split(r"[._\-\s]+", camel_split.lower())
+    return [p for p in parts if p]
+
+_CRUD_ROUTE_VERB = {
+    "delete": re.compile(r"\bDELETE\b", re.IGNORECASE),
+    "create": re.compile(r"\bPOST\b", re.IGNORECASE),
+    "update": re.compile(r"\b(?:PUT|PATCH)\b", re.IGNORECASE),
+}
+
+_CRUD_EXPORT_PATTERNS: dict[str, list[str]] = {
+    "delete": [r"^(?:delete|remove|destroy)[A-Z_]", r"^use(?:Delete|Remove|Destroy)"],
+    "create": [r"^(?:create|add)[A-Z_]", r"^use(?:Create|Add)"],
+    "update": [r"^(?:edit|update|patch)[A-Z_]", r"^use(?:Edit|Update|Patch)"],
+}
+
+# Existing flow names that should suppress synthetic injection for a verb.
+_CRUD_NAME_HINTS: dict[str, list[str]] = {
+    "delete": ["delete", "remove", "destroy"],
+    "create": ["create", "add", "new"],
+    "update": ["edit", "update", "modify"],
+}
+
+
+def _detect_crud_files(
+    feature_files: list[str],
+    signatures: dict[str, FileSignature],
+) -> dict[str, list[str]]:
+    """Return {verb: [files]} for CRUD operations with strong code signals.
+
+    A file is a candidate for a verb if EITHER its filename matches a verb
+    pattern OR its signature exposes a matching route/export. Used to
+    decide whether the LLM missed a CRUD flow.
+    """
+    hits: dict[str, list[str]] = {"delete": [], "create": [], "update": []}
+    for path in feature_files:
+        tokens = set(_tokenize_filename(Path(path).stem))
+        sig = signatures.get(path)
+        routes_text = ""
+        exports: list[str] = []
+        if sig:
+            routes_text = " ".join(sig.routes)
+            exports = list(sig.exports)
+
+        for verb in hits:
+            name_match = bool(_CRUD_FILENAME_VERBS[verb] & tokens)
+            route_match = bool(
+                routes_text and _CRUD_ROUTE_VERB[verb].search(routes_text)
+            )
+            export_match = any(
+                any(re.search(pat, exp) for pat in _CRUD_EXPORT_PATTERNS[verb])
+                for exp in exports
+            )
+            if name_match or route_match or export_match:
+                hits[verb].append(path)
+    return {verb: files for verb, files in hits.items() if files}
+
+
+def _op_already_covered(verb: str, flows: list[_FlowFileMapping]) -> bool:
+    """Check whether an existing flow name implies this CRUD verb."""
+    hints = _CRUD_NAME_HINTS[verb]
+    for flow in flows:
+        lname = flow.flow_name.lower()
+        if any(h in lname for h in hints):
+            return True
+    return False
+
+
+def _feature_noun(feature_name: str) -> str:
+    """Derive a singular-ish noun for a synthesized flow name.
+
+    Preserves multi-word features as-is (users already named them sensibly),
+    just strips trailing 's' from single-word plurals so we get
+    ``delete-tag-flow`` from ``tags`` rather than ``delete-tags-flow``.
+    """
+    base = feature_name.strip().lower().replace("_", "-").replace(" ", "-")
+    if "-" in base:
+        return base
+    if base.endswith("ies") and len(base) > 3:
+        return base[:-3] + "y"
+    if base.endswith("s") and not base.endswith("ss") and len(base) > 2:
+        return base[:-1]
+    return base
+
+
+def _enrich_crud_gaps(
+    flows: list[_FlowFileMapping],
+    feature_name: str,
+    feature_files: list[str],
+    signatures: dict[str, FileSignature],
+) -> list[_FlowFileMapping]:
+    """Inject synthetic flows for CRUD operations the LLM didn't emit.
+
+    Only files not already assigned to any flow are attached to the
+    synthetic flow — we never steal files from a valid LLM-emitted flow.
+    If every CRUD-signal file is already covered, nothing is emitted.
+    """
+    crud_files = _detect_crud_files(feature_files, signatures)
+    if not crud_files:
+        return flows
+
+    assigned: set[str] = {f for fl in flows for f in fl.files}
+    noun = _feature_noun(feature_name)
+    enriched = list(flows)
+
+    for verb, files in crud_files.items():
+        if _op_already_covered(verb, enriched):
+            continue
+        gap_files = [f for f in files if f not in assigned]
+        if not gap_files:
+            # Signals exist but files are already in other flows — leave
+            # them alone rather than duplicate attribution.
+            continue
+        synthetic_name = f"{verb}-{noun}-flow"
+        enriched.append(
+            _FlowFileMapping(flow_name=synthetic_name, files=gap_files)
+        )
+        assigned.update(gap_files)
+        logger.info(
+            "crud-enrichment: feature=%s injected synthetic flow %r with %d files",
+            feature_name, synthetic_name, len(gap_files),
+        )
+    return enriched
 
 
 # Maximum flows per feature — merge the smallest flows into their nearest neighbor
