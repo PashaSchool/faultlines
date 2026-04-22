@@ -31,12 +31,15 @@ from faultline.llm.sonnet_scanner import (
     _build_system_prompt,
     _clean_inputs,
     _dedup_flows_across_features,
+    _enrich_crud_from_signatures,
+    _filter_noise_flows,
     _finalize_result,
     _merge_noise_singletons,
     _promote_library_root_candidates,
     build_commit_context,
     deep_scan,
     deep_scan_workspace,
+    extract_flow_entry_points,
     split_catchall_by_layer,
 )
 
@@ -1588,3 +1591,222 @@ class TestMergeNoiseSingletons:
         ]
         merged = _merge_noise_singletons(features_map, sonnet_features)
         assert merged == features_map
+
+
+class TestFilterNoiseFlows:
+    """Soc0 regression: sidebar-toggle / change-language / state-management flows must drop."""
+
+    def test_technical_flows_stripped(self) -> None:
+        features = [
+            SonnetFeature(name="frontend", files=["fe/a.ts"], flows=[
+                SonnetFlow(name="sidebar-toggle-flow"),
+                SonnetFlow(name="change-language-flow"),
+                SonnetFlow(name="toggle-dev-environment-flow"),
+                SonnetFlow(name="state-management-flow"),
+                SonnetFlow(name="navigation-flow"),
+            ]),
+        ]
+        removed = _filter_noise_flows(features)
+        # All five are either exact-match technical names or technical-word-only.
+        # At minimum the exact matches must go — anything not caught is a gap
+        # the Haiku filter left on the floor, not a regression here.
+        assert removed >= 2
+        remaining = {f.name for f in features[0].flows}
+        assert "state-management-flow" not in remaining
+        assert "navigation-flow" not in remaining
+
+    def test_real_user_flows_untouched(self) -> None:
+        features = [
+            SonnetFeature(name="auth", files=["auth/login.ts"], flows=[
+                SonnetFlow(name="login-flow"),
+                SonnetFlow(name="forgot-password-flow"),
+                SonnetFlow(name="reset-password-flow"),
+            ]),
+        ]
+        removed = _filter_noise_flows(features)
+        assert removed == 0
+        assert [f.name for f in features[0].flows] == [
+            "login-flow", "forgot-password-flow", "reset-password-flow",
+        ]
+
+    def test_filename_flow_dropped(self) -> None:
+        features = [
+            SonnetFeature(name="misc", files=["src/index.ts"], flows=[
+                SonnetFlow(name="index.ts-flow"),
+                SonnetFlow(name="browse-items-flow"),
+            ]),
+        ]
+        _filter_noise_flows(features)
+        assert [f.name for f in features[0].flows] == ["browse-items-flow"]
+
+    def test_empty_features_noop(self) -> None:
+        assert _filter_noise_flows([]) == 0
+
+
+class TestExtractFlowEntryPoints:
+    """Soc0 regression: router + page files must surface as flow entry points."""
+
+    def test_backend_routers_detected(self) -> None:
+        paths = [
+            "backend/routers/investigations.py",
+            "backend/routers/post_mortems.py",
+            "backend/services/investigation_executor.py",
+            "backend/models/investigation.py",
+        ]
+        eps = extract_flow_entry_points(paths)
+        roles = {p: r for p, r in eps}
+        assert roles.get("backend/routers/investigations.py") == "router"
+        assert roles.get("backend/routers/post_mortems.py") == "router"
+        # Services and models are NOT entry points
+        assert "backend/services/investigation_executor.py" not in roles
+        assert "backend/models/investigation.py" not in roles
+
+    def test_frontend_page_components_detected(self) -> None:
+        paths = [
+            "frontend/src/pages/InvestigationPage.tsx",
+            "frontend/src/pages/StartInvestigationPage.tsx",
+            "frontend/src/components/Card.tsx",
+            "frontend/src/hooks/useAuth.ts",
+        ]
+        eps = extract_flow_entry_points(paths)
+        roles = {p: r for p, r in eps}
+        assert roles.get("frontend/src/pages/InvestigationPage.tsx") == "page"
+        assert roles.get("frontend/src/pages/StartInvestigationPage.tsx") == "page"
+        assert "frontend/src/components/Card.tsx" not in roles
+        assert "frontend/src/hooks/useAuth.ts" not in roles
+
+    def test_view_suffix_detected(self) -> None:
+        paths = [
+            "frontend/src/screens/DashboardScreen.tsx",
+            "frontend/src/widgets/InvestigationResultsView.tsx",
+        ]
+        eps = extract_flow_entry_points(paths)
+        roles = {p: r for p, r in eps}
+        # Screen dir + View suffix
+        assert roles.get("frontend/src/screens/DashboardScreen.tsx") == "page"
+        assert roles.get("frontend/src/widgets/InvestigationResultsView.tsx") == "page"
+
+    def test_routers_preferred_over_pages(self) -> None:
+        # When max_items caps output, routers should come first
+        paths = [f"frontend/pages/Page{i}.tsx" for i in range(5)] + [
+            "backend/routers/x.py", "backend/routers/y.py",
+        ]
+        eps = extract_flow_entry_points(paths, max_items=3)
+        assert len(eps) == 3
+        assert eps[0][1] == "router"
+        assert eps[1][1] == "router"
+        assert eps[2][1] == "page"
+
+    def test_empty_paths(self) -> None:
+        assert extract_flow_entry_points([]) == []
+
+    def test_no_entry_points_in_plain_files(self) -> None:
+        paths = ["src/utils/helpers.ts", "src/lib/date.ts", "README.md"]
+        assert extract_flow_entry_points(paths) == []
+
+
+class TestEnrichCrudFromSignatures:
+    """Soc0 / api-keys regression: POST route → create-X-flow must not be missed."""
+
+    @staticmethod
+    def _sig(path, exports=(), routes=()):
+        from faultline.analyzer.ast_extractor import FileSignature
+        return FileSignature(path=path, exports=list(exports), routes=list(routes))
+
+    def test_post_route_synthesizes_create_flow(self) -> None:
+        features = [
+            SonnetFeature(
+                name="api-keys",
+                files=["backend/routers/api_keys.py"],
+                flows=[SonnetFlow(name="list-api-keys-flow")],
+            ),
+        ]
+        sigs = {
+            "backend/routers/api_keys.py": self._sig(
+                "backend/routers/api_keys.py",
+                routes=["GET /api/keys", "POST /api/keys"],
+            ),
+        }
+        added = _enrich_crud_from_signatures(features, sigs)
+        assert added == 1
+        names = [fl.name for fl in features[0].flows]
+        # _feature_noun preserves multi-word names as-is (trusts user naming).
+        assert "create-api-keys-flow" in names
+
+    def test_existing_create_flow_not_duplicated(self) -> None:
+        features = [
+            SonnetFeature(
+                name="api-keys",
+                files=["backend/routers/api_keys.py"],
+                flows=[
+                    SonnetFlow(name="create-api-keys-flow"),
+                    SonnetFlow(name="list-api-keys-flow"),
+                ],
+            ),
+        ]
+        sigs = {
+            "backend/routers/api_keys.py": self._sig(
+                "backend/routers/api_keys.py",
+                routes=["POST /api/keys"],
+            ),
+        }
+        added = _enrich_crud_from_signatures(features, sigs)
+        assert added == 0
+
+    def test_delete_and_update_both_synthesized(self) -> None:
+        features = [
+            SonnetFeature(
+                name="tags",
+                files=["api/routers/tags.py"],
+                flows=[SonnetFlow(name="list-tag-flow")],
+            ),
+        ]
+        sigs = {
+            "api/routers/tags.py": self._sig(
+                "api/routers/tags.py",
+                routes=["DELETE /api/tags/{id}", "PATCH /api/tags/{id}"],
+            ),
+        }
+        added = _enrich_crud_from_signatures(features, sigs)
+        assert added == 2
+        names = [fl.name for fl in features[0].flows]
+        assert "delete-tag-flow" in names
+        assert "update-tag-flow" in names
+
+    def test_synonym_already_covered_suppresses_synthesis(self) -> None:
+        # ``remove-*-flow`` is a synonym for delete — should suppress
+        # adding ``delete-*-flow``.
+        features = [
+            SonnetFeature(
+                name="tags",
+                files=["api/routers/tags.py"],
+                flows=[SonnetFlow(name="remove-tag-flow")],
+            ),
+        ]
+        sigs = {
+            "api/routers/tags.py": self._sig(
+                "api/routers/tags.py",
+                routes=["DELETE /api/tags/{id}"],
+            ),
+        }
+        assert _enrich_crud_from_signatures(features, sigs) == 0
+
+    def test_no_signatures_noop(self) -> None:
+        features = [
+            SonnetFeature(name="x", files=["a.py"], flows=[]),
+        ]
+        assert _enrich_crud_from_signatures(features, None) == 0
+        assert _enrich_crud_from_signatures(features, {}) == 0
+
+    def test_no_crud_signal_noop(self) -> None:
+        # GET-only route (no CRUD verb on filename/export) shouldn't trigger
+        features = [
+            SonnetFeature(name="health", files=["backend/routers/health.py"], flows=[]),
+        ]
+        sigs = {
+            "backend/routers/health.py": self._sig(
+                "backend/routers/health.py",
+                routes=["GET /health"],
+            ),
+        }
+        assert _enrich_crud_from_signatures(features, sigs) == 0

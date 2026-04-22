@@ -309,6 +309,30 @@ EVERY feature MUST have flows. No exceptions. A flow = a user action sequence.
 
 Each exported function that represents a user action = a flow. CRUD exports = 3-4 flows minimum.
 
+**Prioritize "likely flow entry points" when present.** Per-candidate blocks may list \
+router files (`backend/routers/investigations.py`) and page components \
+(`StartInvestigationPage.tsx`, `InvestigationDetailPage.tsx`). Each router endpoint and \
+each page component is a strong flow signal — one flow per distinct user action \
+surfaced there. A router with `POST /start` + `GET /{id}` + `POST /{id}/complete` \
+implies three flows: `start-investigation-flow`, `view-investigation-flow`, \
+`complete-investigation-flow`.
+
+**Anti-patterns — NEVER emit these as flow names.** They describe code structure, \
+not what a user does. The post-processor will strip them anyway, so you are wasting \
+output tokens:
+- Generic layers: `data-flow`, `data-display-flow`, `state-management-flow`, \
+  `navigation-flow`, `routing-flow`, `view-flow`, `display-flow`, `render-flow`, \
+  `layout-flow`, `page-layout-flow`, `error-handling-flow`, `validation-flow`
+- UI toggles / dev affordances: `sidebar-toggle-flow`, `theme-toggle-flow`, \
+  `change-language-flow`, `toggle-dev-environment-flow`
+- Infra plumbing: `loading-flow`, `fetching-flow`, `caching-flow`, `storage-flow`, \
+  `styling-flow`, `theming-flow`, `animation-flow`, `config-flow`, `setup-flow`
+- Filename-derived: `index.ts-flow`, `main.py-flow`, anything ending with a file extension
+
+If the only "flow" you can think of for a feature is a technical layer, that means \
+the feature is actually infra — drop it into `shared-infra` instead of emitting a \
+bogus flow.
+
 For large features, each major subdirectory often represents a distinct user workflow. \
 If you see subdirectories like "SecurityGroups/", "AutoSegmentation/", "Dashboard/", "Issues/" \
 inside a feature — each of those is a flow (or multiple flows).
@@ -648,6 +672,70 @@ def split_catchall_by_layer(
     return final_domains, leftover
 
 
+_PAGE_FILENAME_SUFFIXES = (
+    "page.tsx", "page.jsx", "page.ts", "page.js",
+    "view.tsx", "view.jsx", "view.ts", "view.js",
+    "screen.tsx", "screen.jsx",
+)
+_ROUTER_LAYER_DIRS = frozenset({"routers", "routes", "handlers", "controllers"})
+_PAGE_LAYER_DIRS = frozenset({"pages", "screens", "views", "routes"})
+
+
+def extract_flow_entry_points(
+    paths: list[str],
+    max_items: int = 8,
+) -> list[tuple[str, str]]:
+    """Pick files most likely to be user-facing flow entry points.
+
+    Returns up to ``max_items`` ``(path, role)`` pairs where role is one
+    of ``"router"`` or ``"page"``. Backend files living directly under a
+    ``routers/`` (or ``routes/``/``handlers/``/``controllers/``)
+    subdirectory count as routers. Frontend files whose filename ends
+    with ``Page.tsx``/``View.tsx``/``Screen.tsx`` or that live directly
+    under ``pages/`` / ``screens/`` / ``views/`` count as pages.
+
+    This exists because the standard candidate block hides ``views/``
+    and ``pages/`` in ``_SKIP_SUBDIR_NAMES`` (keeps the subdirectory
+    rollup tidy), so Sonnet never saw the strongest flow signal in the
+    file list. Emitting entry points as a dedicated block reinstates
+    that signal without exploding the rollup.
+    """
+    routers: list[tuple[str, str]] = []
+    pages: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for p in paths:
+        if p in seen:
+            continue
+        parts = Path(p).parts
+        low_parts = [pt.lower() for pt in parts]
+        filename_lower = parts[-1].lower() if parts else ""
+        role: str | None = None
+        # Router detection: any layer dir anywhere in the path whose
+        # immediate child is the file itself (e.g. routers/investigations.py).
+        for i, part in enumerate(low_parts[:-1]):
+            if part in _ROUTER_LAYER_DIRS and i + 1 == len(parts) - 1:
+                role = "router"
+                break
+        if role is None:
+            for i, part in enumerate(low_parts[:-1]):
+                if part in _PAGE_LAYER_DIRS:
+                    role = "page"
+                    break
+        if role is None and any(filename_lower.endswith(suf) for suf in _PAGE_FILENAME_SUFFIXES):
+            role = "page"
+        if role == "router":
+            routers.append((p, role))
+        elif role == "page":
+            pages.append((p, role))
+        seen.add(p)
+
+    # Prefer routers (strongest signal — they literally declare URLs),
+    # then pages. Cap total so the prompt stays bounded.
+    merged = routers + pages
+    return merged[:max_items]
+
+
 def _promote_library_root_candidates(
     candidates: dict[str, list[str]],
 ) -> dict[str, list[str]]:
@@ -740,6 +828,93 @@ def _clean_inputs(
             cleaned_candidates[name] = kept
 
     return cleaned_files, cleaned_candidates, docs_files
+
+
+def _enrich_crud_from_signatures(
+    features: list["SonnetFeature"],
+    signatures: dict | None,
+) -> int:
+    """Synthesize missing CRUD flows from route / export / filename signals.
+
+    LLM flow detection routinely collapses distinct CRUD verbs into a
+    single "manage-X" flow or drops delete entirely (it has few commits
+    and is easy to miss). We detect the gaps deterministically via
+    ``flow_detector._detect_crud_files`` and inject placeholder flows
+    so Sonnet output matches the legacy Haiku path's guarantees.
+
+    Precision > recall: a verb is only synthesized when at least one
+    file in the feature shows a strong CRUD signal (matching HTTP verb
+    in a route, unambiguous filename token, or CRUD-shaped export).
+
+    Returns the count of flows added.
+    """
+    if not features or not signatures:
+        return 0
+
+    from faultline.llm.flow_detector import (
+        _CRUD_NAME_HINTS,
+        _detect_crud_files,
+        _feature_noun,
+    )
+
+    added = 0
+    for feat in features:
+        if not feat.files:
+            continue
+        hits = _detect_crud_files(feat.files, signatures)
+        if not hits:
+            continue
+
+        noun = _feature_noun(feat.name)
+        existing_names_lower = [fl.name.lower() for fl in feat.flows]
+
+        for verb, files in hits.items():
+            hints = _CRUD_NAME_HINTS[verb]
+            already_covered = any(
+                any(h in name for h in hints)
+                for name in existing_names_lower
+            )
+            if already_covered:
+                continue
+            synth_name = f"{verb}-{noun}-flow"
+            if synth_name.lower() in existing_names_lower:
+                continue
+            feat.flows.append(SonnetFlow(
+                name=synth_name,
+                description=f"User {verb}s {noun.replace('-', ' ')}",
+                files=list(files[:3]),
+            ))
+            existing_names_lower.append(synth_name.lower())
+            added += 1
+    return added
+
+
+def _filter_noise_flows(features: list["SonnetFeature"]) -> int:
+    """Strip technical / filename-derived flows from each feature.
+
+    Reuses the same filters the legacy Haiku path runs in
+    ``_filter_valid_files``: ``_is_technical_flow`` rejects
+    ``sidebar-toggle-flow``, ``change-language-flow``,
+    ``state-management-flow`` and peers; ``_is_filename_flow``
+    rejects ``index.ts-flow`` style names. Returns the count of
+    flows removed for logging.
+    """
+    from faultline.llm.flow_detector import _is_filename_flow, _is_technical_flow
+
+    removed = 0
+    for feat in features:
+        if not feat.flows:
+            continue
+        keep: list[SonnetFlow] = []
+        for fl in feat.flows:
+            if _is_technical_flow(fl.name) or _is_filename_flow(fl.name):
+                removed += 1
+                continue
+            keep.append(fl)
+        feat.flows = keep
+    if removed:
+        logger.info("Flow filter: dropped %d technical/filename flows", removed)
+    return removed
 
 
 def _dedup_flows_across_features(
@@ -879,6 +1054,13 @@ def _finalize_result(
     if is_library and _last_scan_result is not None:
         for feat in _last_scan_result.features:
             feat.flows = []
+
+    # 4a. Drop technical / filename-derived flows (``sidebar-toggle-flow``,
+    # ``change-language-flow``, ``index.ts-flow``). The Haiku path runs
+    # these filters in ``_filter_valid_files``; the Sonnet path bypassed
+    # them, so Sonnet noise was reaching the final map unchallenged.
+    if _last_scan_result is not None and not is_library:
+        _filter_noise_flows(_last_scan_result.features)
 
     # 4b. Deduplicate flow names across features. When the LLM emits the
     # same flow (e.g., ``chat-conversation-flow``) under two features
@@ -1081,6 +1263,15 @@ def deep_scan(
                     cand_lines.append(f"    {sig_info}")
             if len(paths) > _MAX_FILES:
                 cand_lines.append(f"  ... and {len(paths) - _MAX_FILES} more")
+
+        # Flow entry points: surface router and page files explicitly so
+        # Sonnet stops missing ``start-investigation-flow`` because its
+        # entry point lived under ``views/`` (hidden in the rollup above).
+        entry_points = extract_flow_entry_points(paths)
+        if entry_points:
+            cand_lines.append("  → likely flow entry points:")
+            for ep_path, ep_role in entry_points:
+                cand_lines.append(f"    • {ep_path} ({ep_role})")
     candidates_text = "\n".join(cand_lines)
 
     # Format unmatched — collapse to dirs if too many
@@ -1292,6 +1483,15 @@ def deep_scan(
         # phantoms, strip flows for libraries. All pure transformations —
         # unit-tested in tests/test_sonnet_scanner_pipeline.py.
         features_dict = _finalize_result(result, docs_files, is_library)
+
+        # Fix D: synthesize missing CRUD flows from route signatures.
+        # Runs after _finalize_result so we only operate on features that
+        # survived filtering — and only on app repos (libraries don't
+        # expose user flows).
+        if not is_library and signatures:
+            added = _enrich_crud_from_signatures(_last_scan_result.features, signatures)
+            if added:
+                logger.info("CRUD enrichment: synthesized %d missing flow(s)", added)
 
         # D10: wrap into a DeepScanResult that carries flows + descriptions +
         # cost summary alongside the feature map. Reads from the global
