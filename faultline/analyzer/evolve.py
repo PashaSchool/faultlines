@@ -33,7 +33,7 @@ from faultline.models.types import FeatureMap, Feature, Flow
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-20250514"
+_MODEL = "claude-sonnet-4-6"
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 2.0
 

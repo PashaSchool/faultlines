@@ -32,7 +32,7 @@ from faultline.models.types import FeatureMap
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+_DEFAULT_MODEL = "claude-sonnet-4-6"
 _MAX_ORPHANS_IN_PROMPT = 80
 _MIN_GROUP_SIZE_FOR_NEW_FEATURE = 3  # fewer files → attach to nearest existing feature
 

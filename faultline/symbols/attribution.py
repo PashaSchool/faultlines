@@ -20,7 +20,7 @@ from faultline.symbols.extractor import FileSymbols
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+_DEFAULT_MODEL = "claude-sonnet-4-6"
 _DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:14b"
 _DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 _MAX_SYMBOLS_IN_PROMPT = 120

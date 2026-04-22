@@ -304,7 +304,7 @@ Recent bugs (< 30 days) weigh 2x more than older ones, so features that are acti
 | `--symbols` | off | Attribute functions/classes to flows with line ranges (requires `--llm --flows`) |
 | `--push` | off | Upload feature map to Faultlines SaaS dashboard (requires `FAULTLINE_API_KEY`) |
 | `--provider` | `anthropic` | LLM provider: `anthropic` or `ollama` |
-| `--model` | auto | Model override (e.g. `claude-sonnet-4-5-20250929`) |
+| `--model` | auto | Model override (e.g. `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) |
 | `--api-key` | env | Anthropic API key |
 | `--src` | — | Focus on subdirectory (e.g. `src/`) |
 | `--days` | `365` | Days of git history |
