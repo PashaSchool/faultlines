@@ -308,15 +308,18 @@ def analyze(
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(
-                    f"[yellow]New pipeline raised {type(exc).__name__}: {exc} — "
-                    f"falling through to legacy[/yellow]"
+                    f"[red]⚠ New pipeline raised {type(exc).__name__}: {exc}[/red]"
+                )
+                console.print(
+                    "[red]   Falling through to LEGACY 5-strategy path — "
+                    "post-rewrite improvements (catchall split, flow dedup, "
+                    "CRUD enrichment, noise filter) will NOT apply to this scan.[/red]"
                 )
                 _new_pipeline_result = None
 
             if _new_pipeline_result is None:
                 console.print(
-                    "[yellow]New pipeline returned no features — "
-                    "falling through to legacy[/yellow]"
+                    "[red]⚠ New pipeline returned no features — falling through to legacy[/red]"
                 )
             else:
                 raw_mapping = dict(_new_pipeline_result.features)

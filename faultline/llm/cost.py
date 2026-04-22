@@ -32,9 +32,10 @@ from typing import Literal
 # Shape: model_id → (input_per_mtok, output_per_mtok)
 
 _PRICING: dict[str, tuple[float, float]] = {
-    # Claude 4/4.6 family
+    # Claude 4/4.6/4.7 family
     "claude-opus-4-20250514":    (15.00, 75.00),
     "claude-opus-4-6":           (15.00, 75.00),
+    "claude-opus-4-7":           (15.00, 75.00),
     "claude-sonnet-4-20250514":  (3.00, 15.00),
     "claude-sonnet-4-6":         (3.00, 15.00),
     "claude-haiku-4-5":          (1.00,  5.00),
@@ -52,6 +53,38 @@ _DEFAULT_PRICING = (3.00, 15.00)
 
 # Anthropic batch-API discount (50%) applies to both input and output.
 _BATCH_DISCOUNT = 0.50
+
+# Models that deprecated the ``temperature`` sampling parameter. Passing
+# ``temperature=0`` to any of these returns HTTP 400 and a helpful
+# "temperature is deprecated for this model" error. Callers that want
+# deterministic output should gate the parameter through
+# ``supports_temperature`` rather than assuming every Claude model
+# accepts it.
+_NO_TEMPERATURE_MODELS: tuple[str, ...] = (
+    "claude-opus-4-7",
+)
+
+
+def supports_temperature(model: str) -> bool:
+    """Return True when ``model`` still accepts the ``temperature`` kwarg.
+
+    Used by every ``messages.create`` call site in the pipeline so that
+    newer Anthropic models (Opus 4.7+) don't 400 the whole scan, which
+    would silently fall through to the legacy detector and bypass every
+    post-rewrite improvement.
+    """
+    return not any(model.startswith(prefix) for prefix in _NO_TEMPERATURE_MODELS)
+
+
+def deterministic_params(model: str) -> dict[str, float]:
+    """Return the kwargs to splat into ``messages.create`` for determinism.
+
+    Empty dict when the model no longer supports ``temperature`` — the
+    API call still succeeds, just without a hard determinism guarantee.
+    """
+    if supports_temperature(model):
+        return {"temperature": 0}
+    return {}
 
 
 def lookup_pricing(model: str) -> tuple[float, float]:

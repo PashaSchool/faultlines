@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any
 
-from faultline.llm.cost import CostTracker
+from faultline.llm.cost import CostTracker, deterministic_params
 from faultline.models.types import Feature, SymbolAttribution
 from faultline.symbols.extractor import FileSymbols
 
@@ -149,8 +149,8 @@ def _ask_llm(
         response = client.messages.create(
             model=model,
             max_tokens=4000,
-            temperature=0,
             messages=[{"role": "user", "content": prompt}],
+            **deterministic_params(model),
         )
     except Exception as exc:
         logger.warning("symbol attribution LLM call failed: %s", exc)

@@ -6,8 +6,10 @@ from faultline.llm.cost import (
     BudgetExceeded,
     CostRecord,
     CostTracker,
+    deterministic_params,
     estimate_call_cost,
     lookup_pricing,
+    supports_temperature,
 )
 
 
@@ -219,3 +221,32 @@ class TestSummary:
         assert "$0.4500" in report
         assert "budget" in report
         assert "45%" in report
+
+
+class TestTemperatureSupport:
+    """Opus 4.7 and later drop the temperature parameter. Pipeline must
+    skip it for these models so scans don't 400 and fall through to
+    legacy silently."""
+
+    def test_sonnet_supports_temperature(self) -> None:
+        assert supports_temperature("claude-sonnet-4-6") is True
+
+    def test_haiku_supports_temperature(self) -> None:
+        assert supports_temperature("claude-haiku-4-5-20251001") is True
+
+    def test_opus_4_6_still_supports(self) -> None:
+        assert supports_temperature("claude-opus-4-6") is True
+
+    def test_opus_4_7_dropped(self) -> None:
+        assert supports_temperature("claude-opus-4-7") is False
+
+    def test_deterministic_params_sonnet(self) -> None:
+        assert deterministic_params("claude-sonnet-4-6") == {"temperature": 0}
+
+    def test_deterministic_params_opus_4_7(self) -> None:
+        assert deterministic_params("claude-opus-4-7") == {}
+
+    def test_deterministic_params_unknown_model(self) -> None:
+        # Unknown models default to supporting temperature — safer to
+        # preserve determinism until proven otherwise.
+        assert deterministic_params("claude-future-model") == {"temperature": 0}

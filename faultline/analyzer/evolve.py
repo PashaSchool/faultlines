@@ -29,6 +29,7 @@ import anthropic
 from pydantic import BaseModel
 
 from faultline.analyzer.features import _normalize_stem, _best_stem_match
+from faultline.llm.cost import deterministic_params
 from faultline.models.types import FeatureMap, Feature, Flow
 
 logger = logging.getLogger(__name__)
@@ -534,9 +535,9 @@ def evolve_with_llm(
             response = client.messages.create(
                 model=_MODEL,
                 max_tokens=4096,
-                temperature=0,
                 system=_EVOLVE_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
+                **deterministic_params(_MODEL),
             )
 
             text = response.content[0].text if response.content else ""

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from faultline.llm.cost import CostTracker
+from faultline.llm.cost import CostTracker, deterministic_params
 from faultline.models.types import FeatureMap
 
 logger = logging.getLogger(__name__)
@@ -244,8 +244,8 @@ def _llm_classify_group(
         response = client.messages.create(
             model=model,
             max_tokens=1500,
-            temperature=0,
             messages=[{"role": "user", "content": prompt}],
+            **deterministic_params(model),
         )
     except Exception as exc:
         logger.warning("discovery LLM call failed: %s", exc)

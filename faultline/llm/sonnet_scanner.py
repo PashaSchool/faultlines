@@ -33,7 +33,7 @@ from faultline.analyzer.validation import (
     is_test_file,
     partition_docs_vs_code,
 )
-from faultline.llm.cost import CostTracker
+from faultline.llm.cost import CostTracker, deterministic_params
 
 logger = logging.getLogger(__name__)
 
@@ -1314,9 +1314,9 @@ def deep_scan(
             response = client.messages.create(
                 model=resolved_model,
                 max_tokens=8_192,
-                temperature=0,
                 system=system_prompt,
                 messages=[{"role": "user", "content": prompt}],
+                **deterministic_params(resolved_model),
             )
 
             # D4: record token usage and check budget immediately, so
