@@ -30,11 +30,14 @@ from faultline.llm.sonnet_scanner import (
     SonnetOpsResponse,
     _build_system_prompt,
     _clean_inputs,
+    _dedup_flows_across_features,
     _finalize_result,
+    _merge_noise_singletons,
     _promote_library_root_candidates,
     build_commit_context,
     deep_scan,
     deep_scan_workspace,
+    split_catchall_by_layer,
 )
 
 
@@ -1411,3 +1414,177 @@ class TestDeepScanReturnsDeepScanResult:
         assert "auth" in result.features
         assert result.flows.get("auth") == ["login-flow"]
         assert result.descriptions.get("auth") == "Login and signup"
+
+
+class TestSplitCatchallByLayer:
+    """Soc0 regression: backend/frontend catchall buckets split by app-layer dirs."""
+
+    def test_soc0_backend_splits_by_router_domain(self) -> None:
+        files = [
+            "backend/routers/investigations.py",
+            "backend/routers/post_mortems.py",
+            "backend/services/investigation_executor.py",
+            "backend/services/investigation_scheduler.py",
+            "backend/models/investigation.py",
+            "backend/models/post_mortem.py",
+            "backend/services/report_generator.py",
+            "backend/routers/reports.py",
+        ]
+        domains, leftover = split_catchall_by_layer(files, "backend")
+        assert set(domains.keys()) == {"investigation", "post_mortem", "report"}
+        assert leftover == []
+        assert "backend/routers/investigations.py" in domains["investigation"]
+        assert "backend/services/investigation_scheduler.py" in domains["investigation"]
+
+    def test_single_file_domains_drop_to_leftover(self) -> None:
+        files = [
+            "backend/routers/ping.py",  # lone file, below min — no grouping
+            "backend/routers/users.py",
+            "backend/models/user.py",
+        ]
+        domains, leftover = split_catchall_by_layer(files, "backend")
+        assert "user" in domains
+        assert len(domains["user"]) == 2
+        assert "backend/routers/ping.py" in leftover
+
+    def test_frontend_pages_split(self) -> None:
+        # Subdirectory-style pages: frontend/pages/<domain>/<file>
+        files = [
+            "frontend/pages/investigations/index.tsx",
+            "frontend/pages/investigations/detail.tsx",
+            "frontend/pages/dashboard/index.tsx",
+            "frontend/pages/dashboard/widgets.tsx",
+        ]
+        domains, leftover = split_catchall_by_layer(files, "frontend")
+        assert set(domains.keys()) == {"investigation", "dashboard"}
+        assert leftover == []
+
+    def test_paths_without_layer_dirs_all_leftover(self) -> None:
+        files = [
+            "backend/helpers.py",
+            "backend/config.py",
+            "backend/main.py",
+        ]
+        domains, leftover = split_catchall_by_layer(files, "backend")
+        assert domains == {}
+        assert len(leftover) == 3
+
+    def test_deeply_nested_layer_dirs_ignored(self) -> None:
+        # Layer word appearing deep inside a non-catchall subtree should NOT
+        # be treated as a layer — only those directly under the catchall root.
+        files = [
+            "frontend/src/components/ui/views/Button.tsx",
+            "frontend/src/components/ui/views/Card.tsx",
+        ]
+        domains, leftover = split_catchall_by_layer(files, "frontend")
+        # Both files have the layer word `views` but not directly under frontend
+        assert domains == {}
+        assert len(leftover) == 2
+
+
+class TestDedupFlowsAcrossFeatures:
+    """Soc0 regression: chat-conversation-flow appeared under both backend and chat."""
+
+    def test_flow_in_two_features_keeps_best_overlap(self) -> None:
+        features = [
+            SonnetFeature(
+                name="chat",
+                files=["chat/conversation.py", "chat/ui.tsx", "chat/shared.py"],
+                flows=[SonnetFlow(
+                    name="chat-conversation-flow",
+                    files=["chat/conversation.py", "chat/ui.tsx"],
+                )],
+            ),
+            SonnetFeature(
+                name="backend",
+                files=["backend/services/chat_executor.py"],
+                flows=[SonnetFlow(
+                    name="chat-conversation-flow",
+                    files=["chat/conversation.py"],  # one overlap — but with chat, not backend
+                )],
+            ),
+        ]
+        feature_files = {
+            "chat": ["chat/conversation.py", "chat/ui.tsx", "chat/shared.py"],
+            "backend": ["backend/services/chat_executor.py"],
+        }
+        _dedup_flows_across_features(features, feature_files)
+        chat_flow_names = [f.name for f in features[0].flows]
+        backend_flow_names = [f.name for f in features[1].flows]
+        assert "chat-conversation-flow" in chat_flow_names
+        assert "chat-conversation-flow" not in backend_flow_names
+
+    def test_unique_flows_untouched(self) -> None:
+        features = [
+            SonnetFeature(
+                name="auth",
+                files=["auth/login.ts"],
+                flows=[SonnetFlow(name="login-flow", files=["auth/login.ts"])],
+            ),
+            SonnetFeature(
+                name="billing",
+                files=["billing/invoice.ts"],
+                flows=[SonnetFlow(name="issue-invoice-flow", files=["billing/invoice.ts"])],
+            ),
+        ]
+        feature_files = {"auth": ["auth/login.ts"], "billing": ["billing/invoice.ts"]}
+        _dedup_flows_across_features(features, feature_files)
+        assert [f.name for f in features[0].flows] == ["login-flow"]
+        assert [f.name for f in features[1].flows] == ["issue-invoice-flow"]
+
+    def test_empty_features_list_noop(self) -> None:
+        _dedup_flows_across_features([], {})  # must not raise
+
+
+class TestMergeNoiseSingletons:
+    """Soc0 regression: ui-animations (1 file, 0 flows) should fold into shared-infra."""
+
+    def test_singleton_without_flows_merges(self) -> None:
+        features_map = {
+            "auth": ["auth/login.ts", "auth/signup.ts"],
+            "ui-animations": ["styles/animations.css"],
+        }
+        sonnet_features = [
+            SonnetFeature(name="auth", files=features_map["auth"], flows=[
+                SonnetFlow(name="login-flow", files=["auth/login.ts"]),
+            ]),
+            SonnetFeature(name="ui-animations", files=["styles/animations.css"], flows=[]),
+        ]
+        merged = _merge_noise_singletons(features_map, sonnet_features)
+        assert "ui-animations" not in merged
+        assert "styles/animations.css" in merged["shared-infra"]
+        # Side-channel drops the merged-away entry so flow lookups stay consistent
+        assert [f.name for f in sonnet_features] == ["auth"]
+
+    def test_singleton_with_flows_kept(self) -> None:
+        features_map = {
+            "tiny": ["tiny/entry.py"],
+        }
+        sonnet_features = [
+            SonnetFeature(name="tiny", files=["tiny/entry.py"], flows=[
+                SonnetFlow(name="do-thing-flow", files=["tiny/entry.py"]),
+            ]),
+        ]
+        merged = _merge_noise_singletons(features_map, sonnet_features)
+        assert "tiny" in merged
+        assert "shared-infra" not in merged
+
+    def test_multi_file_feature_kept_even_without_flows(self) -> None:
+        features_map = {
+            "wide": ["wide/a.py", "wide/b.py"],
+        }
+        sonnet_features = [
+            SonnetFeature(name="wide", files=["wide/a.py", "wide/b.py"], flows=[]),
+        ]
+        merged = _merge_noise_singletons(features_map, sonnet_features)
+        assert "wide" in merged
+
+    def test_nothing_to_merge_is_noop(self) -> None:
+        features_map = {"auth": ["auth/a.py", "auth/b.py"]}
+        sonnet_features = [
+            SonnetFeature(name="auth", files=features_map["auth"], flows=[
+                SonnetFlow(name="login-flow", files=["auth/a.py"]),
+            ]),
+        ]
+        merged = _merge_noise_singletons(features_map, sonnet_features)
+        assert merged == features_map

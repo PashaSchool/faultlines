@@ -514,6 +514,140 @@ def _split_candidate_by_stem(paths: list[str]) -> dict[str, list[str]]:
     return stems
 
 
+_APP_LAYER_DIRS = frozenset({
+    "routers", "routes", "router",
+    "services", "service",
+    "models", "model",
+    "handlers", "handler",
+    "controllers", "controller",
+    "endpoints", "endpoint",
+    "views", "view",
+    "pages", "page",
+    "screens", "screen",
+})
+
+_LAYER_NAME_SUFFIXES = (
+    "_service", "_router", "_handler", "_controller",
+    "_model", "_repository", "_repo", "_view", "_page",
+    "_executor", "_scheduler", "_engine", "_manager",
+    "_generator", "_builder", "_provider", "_client",
+    "_settings", "_config",
+)
+
+# Soft suffixes trimmed without a leading underscore — frontend pages like
+# ``InvestigationPage.tsx`` have no separator. Only applied after the stem
+# already contains at least four leading characters so we never eat real
+# words (``stage`` → ``st``).
+_LAYER_SOFT_TAIL_WORDS = ("page", "view", "screen", "panel", "widget")
+
+_MIN_STEM_LEN_AFTER_TRIM = 4
+
+
+def _normalize_domain_stem(stem: str) -> str:
+    """Strip layer-role and plural suffixes so related files group together.
+
+    ``investigations`` / ``investigation_executor`` / ``investigation``
+    all resolve to ``investigation``. Deliberately conservative — only
+    trims well-known suffixes and a single trailing ``s``.
+    """
+    for suf in _LAYER_NAME_SUFFIXES:
+        if stem.endswith(suf) and len(stem) - len(suf) >= _MIN_STEM_LEN_AFTER_TRIM:
+            stem = stem[: -len(suf)]
+            break
+    for tail in _LAYER_SOFT_TAIL_WORDS:
+        if stem.endswith(tail) and len(stem) - len(tail) >= _MIN_STEM_LEN_AFTER_TRIM:
+            stem = stem[: -len(tail)]
+            break
+    if (
+        stem.endswith("s")
+        and not stem.endswith("ss")
+        and not stem.endswith("us")
+        and len(stem) > _MIN_STEM_LEN_AFTER_TRIM
+    ):
+        stem = stem[:-1]
+    return stem.strip("_-.")
+
+_MIN_CATCHALL_SPLIT_FILES = 15
+_MIN_SUBDOMAIN_FILES = 2
+
+
+def _domain_stem_from_layered_path(path: str, catchall_name: str) -> str | None:
+    """Return the domain name for a file living under an app-layer dir.
+
+    Soc0-style layout: ``backend/routers/investigations.py`` →
+    ``investigations``. The detector walks the path parts and, when it
+    finds one of ``_APP_LAYER_DIRS`` whose parent matches ``catchall_name``
+    (or is at the repo root), treats the next path segment as the domain.
+
+    File stems get ``_LAYER_NAME_SUFFIXES`` trimmed so
+    ``investigation_service.py`` and ``investigation_router.py`` both
+    resolve to ``investigation``.
+    """
+    parts = Path(path).parts
+    for i, part in enumerate(parts):
+        if part.lower() not in _APP_LAYER_DIRS:
+            continue
+        if i + 1 >= len(parts):
+            return None
+        if i > 0:
+            parent = parts[i - 1].lower()
+            if parent != catchall_name.lower() and i != 1:
+                # Only accept layers directly under the catchall root or
+                # at the repo root — don't misfire on deeply nested
+                # ``components/ui/views/Button.tsx`` layouts.
+                continue
+        next_part = parts[i + 1]
+        # When the next segment is itself a directory (e.g., ``frontend/src/
+        # pages/investigations/index.tsx``) the domain is that directory,
+        # not the leaf filename.
+        if i + 2 < len(parts):
+            stem = next_part.lower()
+        else:
+            stem = Path(next_part).stem.lower()
+        stem = _normalize_domain_stem(stem)
+        return stem or None
+    return None
+
+
+def split_catchall_by_layer(
+    catchall_files: list[str],
+    catchall_name: str,
+    min_domain_files: int = _MIN_SUBDOMAIN_FILES,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Split a catchall bucket into domain candidates by app-layer signal.
+
+    Returns ``(domain_candidates, leftover)``. A file joins a domain only
+    if its path contains a recognized layer dir (``routers/``, ``services/``,
+    ``views/``, …) directly under the catchall root. Domains with fewer
+    than ``min_domain_files`` files get folded back into ``leftover`` so
+    single-router one-offs don't explode into noise features.
+
+    Soc0 backend bucket example::
+
+        backend/routers/investigations.py  ┐
+        backend/services/investigation_    ├─ domain = "investigation"
+        backend/models/investigation.py    ┘
+
+    Pure transformation — no LLM calls, no module globals. Unit-tested.
+    """
+    domains: dict[str, list[str]] = {}
+    leftover: list[str] = []
+    for fp in catchall_files:
+        domain = _domain_stem_from_layered_path(fp, catchall_name)
+        if domain:
+            domains.setdefault(domain, []).append(fp)
+        else:
+            leftover.append(fp)
+
+    final_domains: dict[str, list[str]] = {}
+    for name, paths in domains.items():
+        if len(paths) >= min_domain_files:
+            final_domains[name] = paths
+        else:
+            leftover.extend(paths)
+    return final_domains, leftover
+
+
 def _promote_library_root_candidates(
     candidates: dict[str, list[str]],
 ) -> dict[str, list[str]]:
@@ -608,6 +742,93 @@ def _clean_inputs(
     return cleaned_files, cleaned_candidates, docs_files
 
 
+def _dedup_flows_across_features(
+    features: list["SonnetFeature"],
+    feature_files: dict[str, list[str]],
+) -> None:
+    """Remove duplicate flow names, keeping the best-matched feature.
+
+    Sonnet sometimes emits the same flow under two features — Soc0 hit
+    ``chat-conversation-flow`` in both ``backend`` and ``chat``. For each
+    duplicate name we pick the feature whose file set has the largest
+    overlap with the flow's own file list. Ties resolve toward the feature
+    with fewer total files (narrower ownership wins). Mutates ``features``
+    in place.
+    """
+    if not features:
+        return
+
+    feat_sets: dict[str, set[str]] = {
+        name: set(files) for name, files in feature_files.items()
+    }
+
+    name_to_owners: dict[str, list[tuple[str, int, int]]] = {}
+    for feat in features:
+        for flow in feat.flows:
+            flow_files = set(flow.files or [])
+            overlap = len(flow_files & feat_sets.get(feat.name, set()))
+            size = len(feat_sets.get(feat.name, set()))
+            name_to_owners.setdefault(flow.name, []).append((feat.name, overlap, size))
+
+    winners: dict[str, str] = {}
+    for flow_name, owners in name_to_owners.items():
+        if len(owners) < 2:
+            winners[flow_name] = owners[0][0]
+            continue
+        # Sort by (-overlap, size, feature_name) — most overlap wins,
+        # narrower feature breaks ties, alphabetical last.
+        owners.sort(key=lambda o: (-o[1], o[2], o[0]))
+        winners[flow_name] = owners[0][0]
+
+    for feat in features:
+        feat.flows = [fl for fl in feat.flows if winners.get(fl.name) == feat.name]
+
+
+def _merge_noise_singletons(
+    features: dict[str, list[str]],
+    sonnet_features: list["SonnetFeature"],
+) -> dict[str, list[str]]:
+    """Fold 1-file features with no flows into ``shared-infra``.
+
+    Soc0's ``ui-animations`` was one CSS file, one commit, zero flows,
+    zero bug fixes. Keeping it as a standalone feature is pure noise —
+    it inflates the feature count and dilutes the top-risk table.
+    ``shared-infra`` is the canonical catchall for such stragglers.
+    """
+    flows_by_feature: dict[str, int] = {
+        feat.name: len(feat.flows) for feat in sonnet_features
+    }
+
+    noisy: set[str] = set()
+    for name, paths in features.items():
+        if name == "shared-infra":
+            continue
+        if len(paths) == 1 and flows_by_feature.get(name, 0) == 0:
+            noisy.add(name)
+
+    if not noisy:
+        return features
+
+    merged: dict[str, list[str]] = {}
+    shared: list[str] = []
+    for name, paths in features.items():
+        if name in noisy:
+            shared.extend(paths)
+        elif name == "shared-infra":
+            shared.extend(paths)
+        else:
+            merged[name] = paths
+    if shared:
+        merged["shared-infra"] = shared
+
+    # Drop the merged-away entries from the side-channel so flow lookups
+    # don't return stale owners.
+    kept = set(merged.keys())
+    sonnet_features[:] = [f for f in sonnet_features if f.name in kept]
+
+    return merged
+
+
 def _finalize_result(
     result: dict[str, list[str]],
     docs_files: list[str],
@@ -658,6 +879,19 @@ def _finalize_result(
     if is_library and _last_scan_result is not None:
         for feat in _last_scan_result.features:
             feat.flows = []
+
+    # 4b. Deduplicate flow names across features. When the LLM emits the
+    # same flow (e.g., ``chat-conversation-flow``) under two features
+    # we keep it only in the feature whose file set overlaps most with
+    # the flow's own files — the other feature has it by mistake.
+    if _last_scan_result is not None and not is_library:
+        _dedup_flows_across_features(_last_scan_result.features, cleaned)
+
+    # 4c. Merge single-file no-flow features into ``shared-infra``. These
+    # are almost always leaked filename-stems (Soc0's ``ui-animations``)
+    # that survived phantom filtering but carry no real business signal.
+    if _last_scan_result is not None:
+        cleaned = _merge_noise_singletons(cleaned, _last_scan_result.features)
 
     # 5. Deterministic ordering (D11): sort by descending size then name.
     # Combined with temperature=0 on the LLM call, this makes two
@@ -779,7 +1013,31 @@ def deep_scan(
     unmatched: list[str] = []
 
     for name, paths in candidates.items():
-        if name in _CATCHALL or len(paths) < _MIN_CANDIDATE_FILES:
+        if name in _CATCHALL:
+            # Before dumping into unmatched, try to salvage domain features
+            # from app-layer signals (routers/, services/, views/…). Without
+            # this, Sonnet sees a flat mass of files and re-invents the same
+            # ``backend``/``frontend`` bucket that the heuristic produced.
+            if not library_mode_active and len(paths) >= _MIN_CATCHALL_SPLIT_FILES:
+                domain_cands, leftover = split_catchall_by_layer(paths, name)
+                if domain_cands:
+                    for dname, dpaths in domain_cands.items():
+                        if dname in real_candidates:
+                            real_candidates[dname].extend(dpaths)
+                        elif dname in candidates:
+                            # Domain already a top-level candidate — let its
+                            # own entry handle it, feed files through that.
+                            real_candidates.setdefault(dname, []).extend(dpaths)
+                        else:
+                            real_candidates[dname] = dpaths
+                    unmatched.extend(leftover)
+                    logger.info(
+                        "Deep scan: split catchall '%s' (%d files) into %d domain candidates + %d leftover",
+                        name, len(paths), len(domain_cands), len(leftover),
+                    )
+                    continue
+            unmatched.extend(paths)
+        elif len(paths) < _MIN_CANDIDATE_FILES:
             unmatched.extend(paths)
         else:
             real_candidates[name] = paths
