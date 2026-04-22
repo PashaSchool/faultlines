@@ -35,6 +35,7 @@ from faultline.llm.sonnet_scanner import (
     _filter_noise_flows,
     _finalize_result,
     _merge_noise_singletons,
+    _normalize_response,
     _promote_library_root_candidates,
     build_commit_context,
     deep_scan,
@@ -1810,3 +1811,72 @@ class TestEnrichCrudFromSignatures:
             ),
         }
         assert _enrich_crud_from_signatures(features, sigs) == 0
+
+
+class TestOpusMergeNormalization:
+    """Opus 4.7 emits merge as list[dict]; pydantic wants list[list[str]]."""
+
+    def test_opus_dict_merge_flattened(self) -> None:
+        data = {
+            "merge": [
+                {"target": "insights", "source": ["insight_subscriptions"]},
+                {"target": "reports", "source": ["exports", "pdf_export"]},
+            ],
+            "rename": [],
+            "remove": [],
+            "split": [],
+            "features": [],
+        }
+        out = _normalize_response(data, model="claude-opus-4-7")
+        assert out["merge"] == [
+            ["insights", "insight_subscriptions"],
+            ["reports", "exports", "pdf_export"],
+        ]
+
+    def test_opus_mixed_list_and_dict_both_accepted(self) -> None:
+        data = {
+            "merge": [
+                ["a", "b"],
+                {"target": "x", "source": ["y"]},
+            ],
+            "features": [],
+        }
+        out = _normalize_response(data, model="claude-opus-4-7")
+        assert out["merge"] == [["a", "b"], ["x", "y"]]
+
+    def test_opus_singular_source_string_accepted(self) -> None:
+        data = {
+            "merge": [{"target": "t", "source": "s"}],
+            "features": [],
+        }
+        out = _normalize_response(data, model="claude-opus-4-7")
+        assert out["merge"] == [["t", "s"]]
+
+    def test_opus_degenerate_merge_dropped(self) -> None:
+        # Only target, no sources → useless merge, drop
+        data = {
+            "merge": [{"target": "x", "source": []}],
+            "features": [],
+        }
+        out = _normalize_response(data, model="claude-opus-4-7")
+        assert out["merge"] == []
+
+    def test_sonnet_dict_merge_untouched(self) -> None:
+        # Critical: Sonnet path must NOT get Opus normalization —
+        # otherwise a malformed Sonnet response would silently go
+        # through instead of being caught by pydantic validation.
+        data = {
+            "merge": [{"target": "x", "source": ["y"]}],
+            "features": [],
+        }
+        out = _normalize_response(data, model="claude-sonnet-4-6")
+        # Merge left as-is; pydantic will reject it at validation time
+        assert out["merge"] == [{"target": "x", "source": ["y"]}]
+
+    def test_no_model_arg_treats_as_non_opus(self) -> None:
+        data = {
+            "merge": [{"target": "x", "source": ["y"]}],
+            "features": [],
+        }
+        out = _normalize_response(data)
+        assert out["merge"] == [{"target": "x", "source": ["y"]}]

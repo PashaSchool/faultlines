@@ -1342,7 +1342,7 @@ def deep_scan(
                 logger.warning("Deep scan: could not parse JSON from response")
                 continue
 
-            parsed = _normalize_response(parsed)
+            parsed = _normalize_response(parsed, model=resolved_model)
 
             try:
                 ops = SonnetOpsResponse.model_validate(parsed)
@@ -1859,13 +1859,19 @@ def deep_scan_workspace(
     )
 
 
-def _normalize_response(data: dict) -> dict:
+def _normalize_response(data: dict, model: str | None = None) -> dict:
     """Normalizes LLM response to expected SonnetOpsResponse format.
 
     Handles variations in how Sonnet returns features (dict vs list)
     while preserving merge/rename/remove operations.
+
+    ``model`` controls model-specific normalizations. Opus 4.7 returns
+    ``merge`` as ``[{target, source}]`` dicts rather than the schema's
+    ``list[list[str]]``; we flatten that shape when the caller tells us
+    the response came from an Opus model. Sonnet/Haiku stay untouched.
     """
     result = dict(data)
+    is_opus = bool(model and model.startswith("claude-opus"))
 
     features = result.get("features", [])
 
@@ -1901,6 +1907,34 @@ def _normalize_response(data: dict) -> dict:
     for s in result.get("split", []):
         if isinstance(s, dict) and "from" in s and "from_name" not in s:
             s["from_name"] = s.pop("from")
+
+    # Opus-only: flatten dict-shaped merge ops into the schema's
+    # ``list[list[str]]``. Opus 4.7 emits
+    # ``[{"target": "insights", "source": ["insight_subscriptions"]}]``
+    # which pydantic rejects; Sonnet/Haiku honour the list-of-lists
+    # schema directly. Target goes first so downstream code that looks
+    # at group ordering sees Opus's intended merge target up front,
+    # even though the merge applier picks the largest feature as target
+    # anyway.
+    if is_opus:
+        merges = result.get("merge", [])
+        normalized_merges: list[list[str]] = []
+        for m in merges:
+            if isinstance(m, list):
+                normalized_merges.append([str(x) for x in m if isinstance(x, (str, int))])
+            elif isinstance(m, dict):
+                target = m.get("target")
+                sources = m.get("source") or m.get("sources") or []
+                if isinstance(sources, str):
+                    sources = [sources]
+                group = []
+                if isinstance(target, str):
+                    group.append(target)
+                if isinstance(sources, list):
+                    group.extend(s for s in sources if isinstance(s, str))
+                if len(group) >= 2:
+                    normalized_merges.append(group)
+        result["merge"] = normalized_merges
 
     return result
 
