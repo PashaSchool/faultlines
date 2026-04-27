@@ -1681,6 +1681,14 @@ _EXAMPLE_PKG_PREFIXES = (
 # packages × ~60s each = 15 min serial → ~4 min parallel).
 _MAX_WORKERS = 4
 
+# Sprint 1 size guard. Above this file count, the tool_use_scan final
+# JSON consistently truncates at max_tokens (every path is echoed in
+# the answer; ~25K output tokens for 2K paths blows the SDK's no-stream
+# 21333 ceiling). 800 sits below the truncation knee on Sonnet 4.6
+# while still covering 95% of real-world packages. Oversized packages
+# route through the no-tools deep_scan path even when --tool-use is set.
+_TOOL_USE_MAX_FILES = 800
+
 
 def deep_scan_workspace(
     workspace_info,  # WorkspaceInfo from faultline.analyzer.workspace
@@ -1839,7 +1847,22 @@ def deep_scan_workspace(
     ) -> tuple:
         """Thread-pool worker: returns (pkg, pkg_prefix, sub_result_or_None)."""
         try:
-            if use_tools:
+            # Size guard: tool_use_scan asks the model to echo every
+            # file path in the final JSON. Above ~800 files the output
+            # truncates at max_tokens before the JSON closes, parse
+            # fails, and the package falls back to a single feature —
+            # which is worse than the no-tools deep_scan that handles
+            # large packages just fine. Sprint 3 (sub-decomposition)
+            # is the real fix; until then route oversized packages
+            # through the no-tools path even when --tool-use is set.
+            tool_use_active = use_tools and len(pkg_files_rel) <= _TOOL_USE_MAX_FILES
+            if use_tools and not tool_use_active:
+                logger.info(
+                    "workspace: %s (%d files) exceeds tool-use size limit (%d) — "
+                    "falling back to no-tools deep_scan for this package",
+                    pkg.name, len(pkg_files_rel), _TOOL_USE_MAX_FILES,
+                )
+            if tool_use_active:
                 if repo_root is None:
                     raise ValueError(
                         "deep_scan_workspace: use_tools=True requires repo_root"

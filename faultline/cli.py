@@ -303,11 +303,13 @@ def analyze(
         _new_pipeline_result = None
         _use_new_pipeline = llm and not legacy and provider == "anthropic"
         if _use_new_pipeline:
+            from faultline.llm.cost import CostTracker
             from faultline.llm.pipeline import run as _run_new_pipeline
             console.print(
                 "[blue]Running new pipeline[/blue] "
                 "(pass [dim]--legacy[/dim] to use the 5-strategy fallback)"
             )
+            _cost_tracker = CostTracker()
             try:
                 _new_pipeline_result = _run_new_pipeline(
                     analysis_files=analysis_files,
@@ -317,6 +319,7 @@ def analyze(
                     commits=commits,
                     api_key=api_key,
                     model=model,
+                    tracker=_cost_tracker,
                     use_tools=tool_use,
                     repo_root=Path(repo_path),
                 )
@@ -340,6 +343,14 @@ def analyze(
                 console.print(
                     f"[green]✓[/green] New pipeline: {len(raw_mapping)} features"
                 )
+                _cost_summary = _cost_tracker.summary()
+                if _cost_summary["total_calls"] > 0:
+                    console.print(
+                        f"[dim]LLM cost: ${_cost_summary['total_cost_usd']:.3f} "
+                        f"across {_cost_summary['total_calls']} calls "
+                        f"({_cost_summary['total_input_tokens']:,} in / "
+                        f"{_cost_summary['total_output_tokens']:,} out)[/dim]"
+                    )
 
         # ── Workspace-aware analysis: per-package detection + merge ──
         _TS_JS_EXTS = {".ts", ".tsx", ".js", ".jsx"}

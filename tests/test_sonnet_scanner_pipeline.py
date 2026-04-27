@@ -825,6 +825,52 @@ class TestDeepScanWorkspace:
         assert "cli" in result
         assert len(result["cli"]) == 8
 
+    def test_use_tools_routes_small_package_through_tool_use_scan(self) -> None:
+        """When use_tools=True and pkg fits the size guard, tool_use_scan_package runs."""
+        from pathlib import Path
+        ws = _ws(packages=[_pkg("billing", "packages/billing", 50)])
+
+        with patch(
+            "faultline.llm.tool_use_scan.tool_use_scan_package"
+        ) as mock_tool, patch(
+            "faultline.llm.sonnet_scanner.deep_scan"
+        ) as mock_ds:
+            mock_tool.return_value = _ds_result({
+                "stripe-checkout": [f"src/file{i}.ts" for i in range(50)],
+            })
+            deep_scan_workspace(
+                ws, api_key="sk-ant-test", min_files_for_llm=30,
+                use_tools=True, repo_root=Path("/tmp/x"),
+            )
+
+        assert mock_tool.call_count == 1
+        assert mock_ds.call_count == 0
+        assert mock_tool.call_args.kwargs["package_name"] == "billing"
+
+    def test_use_tools_size_guard_falls_back_to_deep_scan(self) -> None:
+        """Above _TOOL_USE_MAX_FILES, the package routes to no-tools deep_scan."""
+        from pathlib import Path
+        ws = _ws(packages=[_pkg("web", "apps/web", 1948)])
+
+        with patch(
+            "faultline.llm.tool_use_scan.tool_use_scan_package"
+        ) as mock_tool, patch(
+            "faultline.llm.sonnet_scanner.deep_scan"
+        ) as mock_ds:
+            mock_ds.return_value = _ds_result({
+                "auth": [f"src/file{i}.ts" for i in range(900)],
+                "billing": [f"src/file{i}.ts" for i in range(900, 1948)],
+            })
+            result = deep_scan_workspace(
+                ws, api_key="sk-ant-test", min_files_for_llm=30,
+                use_tools=True, repo_root=Path("/tmp/x"),
+            )
+
+        assert mock_tool.call_count == 0
+        assert mock_ds.call_count == 1
+        assert "web/auth" in result
+        assert "web/billing" in result
+
     def test_large_package_calls_deep_scan_in_package_mode(self) -> None:
         """≥ min_files_for_llm triggers a per-package deep_scan call."""
         ws = _ws(packages=[_pkg("dashboard", "apps/dashboard", 100)])

@@ -214,24 +214,99 @@ the JSON didn't truncate.
 
 ---
 
+## Polish landed after Day 4
+
+Three follow-ups landed in commit `<polish>` (after the headline
+results above):
+
+1. **Size guard on tool-use dispatch.** `_TOOL_USE_MAX_FILES = 800`
+   in `sonnet_scanner.py`. When `use_tools=True` and a package
+   exceeds the limit, that single package routes through the
+   no-tools `deep_scan` (which handles large packages fine) while
+   the rest of the workspace still gets tool-augmented naming. Two
+   new unit tests cover the routing both ways.
+2. **Cost reporting wired into `analyze`.** `pipeline.run` now
+   accepts a `tracker`; the CLI threads in a `CostTracker()`,
+   prints the post-scan summary, and surfaces totals — eliminating
+   the "no cost line on workspace path" Known Issue from
+   `CLAUDE.md`.
+3. **Documenso cross-validation.** Acceptance criterion from
+   `SPRINT_1_PLAN.md` §13.
+
+### Documenso validation (16 packages, ~1800 files, $2.29)
+
+| metric | baseline (Apr 27) | tool-use |
+|---|---|---|
+| total features | 31 | **61** |
+| generic-named¹ | 4 (`lib`, `remix/general`, `ui`, `api`) | **1** (`api`, 9 files — probably legitimate) |
+| `lib` (502 files) | 1 generic feature | **9 specific sub-features** |
+| `remix/general` (365 files) | 1 generic feature | **8 specific sub-features** |
+| `ui` (139 files) | 1 generic feature | **3 specific sub-features** |
+| LLM calls | n/a (not tracked then) | 49 |
+| total cost | n/a | **$2.29** |
+| total runtime | n/a | ~7 min |
+| size-guard fallbacks | n/a | 0 (no package > 800 files) |
+
+¹ Excludes `documentation`/`shared-infra`.
+
+### What `lib`, `remix/general`, `ui` became
+
+```
+lib/document-signing               159 files
+lib/platform-infrastructure        110
+lib/user-authentication             63
+lib/team-and-organisation-management 55
+lib/pdf-processing                  46
+lib/webhooks-and-public-api         33
+lib/template-management             23
+... (and 2 smaller)
+
+remix/document-envelope-management 105
+remix/app-infrastructure            87
+remix/organisation-team-management  79
+remix/document-signing              76
+remix/embedded-signing-authoring    47
+remix/admin-panel                   42
+remix/user-profile-settings         35
+remix/user-authentication           33
+
+ui/design-system-primitives         66
+ui/document-sending-flow            37
+ui/document-signing                 19
+```
+
+This is exactly what Sprint 1 was scoped to deliver: the engine no
+longer guesses from filenames; it reads the code and names the
+features by what they do.
+
+### Updated cost picture
+
+The $2.29 documenso scan is the realistic per-scan cost on a
+medium monorepo with the size guard in place. Formbricks at $10-15
+was inflated by the 1948-file `web` package making 15 tool calls
+that all ended up in a truncated response — **the size guard
+should bring formbricks down to roughly $5-7** by sending `web`
+through the cheaper no-tools path. To re-baseline, re-run
+formbricks with the polish committed.
+
+---
+
 ## Recommended next steps (before Sprint 2)
 
-These are small follow-ups that should land on `feat/tool-use-detection`
-before merging to `main`, in priority order:
+All three planned polish items have landed (see "Polish landed after
+Day 4" above). Open follow-ups before merging to `main`:
 
-1. **Size guard on tool-use dispatch.** In `deep_scan_workspace`, when
-   `use_tools=True` and a package has >800 files, skip tool-use and
-   fall back to the no-tools path for that package. Avoids the web
-   regression. ~30 lines.
-2. **Cross-validate on documenso.** Sprint 1 plan called this out as
-   an acceptance check (`lib 502f`, `remix/general 365f`). Once the
-   size guard is in, run documenso. ~$10.
-3. **Wire `CostTracker.summary()` into the analyze CLI.** End-of-run
-   cost line is currently missing on the workspace path. Listed in
-   `CLAUDE.md` Known Issues; this is the right time. ~20 lines.
+1. **Re-baseline formbricks** with the size guard in place. Expect
+   ~$5-7 (down from $10-15) and the `web` package back at the
+   baseline 9-feature decomposition rather than the 1-feature
+   regression. ~$5.
+2. **Document the size guard knee** in `CLAUDE.md` so the next
+   investigator knows why packages above 800 files take the
+   no-tools path even with `--tool-use`. 5 lines.
 
-After these three, merge to `main` and start Sprint 2 (cross-cluster
-deduplication) per `SPRINTS_ROADMAP.md`.
+Once formbricks is re-baselined, merge `feat/tool-use-detection` to
+`main` and start Sprint 2 (cross-cluster deduplication) per
+`SPRINTS_ROADMAP.md`.
 
 ---
 
