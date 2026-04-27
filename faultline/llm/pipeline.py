@@ -67,6 +67,8 @@ def run(
     tracker: CostTracker | None = None,
     commit_context_top_n: int = 30,
     commit_context_days: int = 90,
+    use_tools: bool = False,
+    repo_root=None,  # pathlib.Path; required when use_tools=True
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -151,6 +153,8 @@ def run(
             is_library=is_library,
             tracker=tracker,
             commit_context=commit_context,
+            use_tools=use_tools,
+            repo_root=repo_root,
         )
     else:
         logger.info(

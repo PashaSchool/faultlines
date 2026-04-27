@@ -92,6 +92,18 @@ def analyze(
         "--max-commits",
         help="Maximum number of commits to analyze",
     ),
+    tool_use: bool = typer.Option(
+        False,
+        "--tool-use",
+        help=(
+            "Sprint 1 (experimental): give the per-package LLM read-only "
+            "tools (read_file_head, list_directory, grep_pattern, "
+            "get_file_commits) so it names features from actual file "
+            "contents instead of guessing from paths. Anthropic + workspace "
+            "monorepos only. Disables flow detection (Sprint 4 territory)."
+        ),
+        is_flag=True,
+    ),
     legacy: bool = typer.Option(
         False,
         "--legacy",
@@ -305,6 +317,8 @@ def analyze(
                     commits=commits,
                     api_key=api_key,
                     model=model,
+                    use_tools=tool_use,
+                    repo_root=Path(repo_path),
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(

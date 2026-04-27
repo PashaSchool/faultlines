@@ -1693,6 +1693,8 @@ def deep_scan_workspace(
     min_files_for_llm: int = _DEFAULT_PKG_LLM_FLOOR,
     commit_context: str | None = None,
     max_workers: int = _MAX_WORKERS,
+    use_tools: bool = False,
+    repo_root=None,  # pathlib.Path; required when use_tools=True
 ) -> DeepScanResult | None:
     """Run ``deep_scan`` once per workspace package and merge the results.
 
@@ -1837,18 +1839,34 @@ def deep_scan_workspace(
     ) -> tuple:
         """Thread-pool worker: returns (pkg, pkg_prefix, sub_result_or_None)."""
         try:
-            sub_result = deep_scan(
-                pkg_files_rel,
-                pkg_candidates,
-                api_key=api_key,
-                signatures=pkg_sigs,
-                is_library=is_library,
-                model=model,
-                tracker=tracker,
-                package_mode=True,
-                package_name=pkg.name,
-                commit_context=commit_context,
-            )
+            if use_tools:
+                if repo_root is None:
+                    raise ValueError(
+                        "deep_scan_workspace: use_tools=True requires repo_root"
+                    )
+                from faultline.llm.tool_use_scan import tool_use_scan_package
+                sub_result = tool_use_scan_package(
+                    package_name=pkg.name,
+                    files=pkg_files_rel,
+                    repo_root=repo_root,
+                    pkg_prefix=pkg_prefix,
+                    api_key=api_key,
+                    model=model,
+                    tracker=tracker,
+                )
+            else:
+                sub_result = deep_scan(
+                    pkg_files_rel,
+                    pkg_candidates,
+                    api_key=api_key,
+                    signatures=pkg_sigs,
+                    is_library=is_library,
+                    model=model,
+                    tracker=tracker,
+                    package_mode=True,
+                    package_name=pkg.name,
+                    commit_context=commit_context,
+                )
         except BudgetExceeded:
             raise
         except Exception as exc:
