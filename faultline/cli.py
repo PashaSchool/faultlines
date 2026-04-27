@@ -138,6 +138,16 @@ def analyze(
         ),
         is_flag=True,
     ),
+    critique: bool = typer.Option(
+        False,
+        "--critique",
+        help=(
+            "Sprint 5 (experimental): final pass that flags weak feature "
+            "or flow names and re-investigates each with tools. Up to 5 "
+            "renames per scan. Adds ~$0.50-1.00 per scan."
+        ),
+        is_flag=True,
+    ),
     legacy: bool = typer.Option(
         False,
         "--legacy",
@@ -359,6 +369,7 @@ def analyze(
                     dedup=dedup,
                     sub_decompose=sub_decompose,
                     tool_flows=tool_flows,
+                    critique=critique,
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(

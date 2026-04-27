@@ -72,6 +72,7 @@ def run(
     dedup: bool = False,
     sub_decompose: bool = False,
     tool_flows: bool = False,
+    critique: bool = False,
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -233,6 +234,21 @@ def run(
             result,
             repo_root=repo_root,
             is_library=is_library,
+            api_key=api_key,
+            model=model,
+            tracker=tracker,
+        )
+
+    # Stage 1.9 (Sprint 5): Self-critique loop. Single Sonnet pass
+    # flags weak names; up to 5 are re-investigated with tools and
+    # renamed when the proposal is materially better than the
+    # original. Opportunistic: any error returns the previous result
+    # unchanged.
+    if critique:
+        from faultline.llm.critique import critique_and_refine
+        result = critique_and_refine(
+            result,
+            repo_root=repo_root,
             api_key=api_key,
             model=model,
             tracker=tracker,
