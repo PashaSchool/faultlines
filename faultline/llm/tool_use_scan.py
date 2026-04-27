@@ -230,6 +230,7 @@ def tool_use_scan(
     on_tool_call: Any = None,
     tracker: "CostTracker | None" = None,
     cost_label: str = "tool-use-scan",
+    system_prompt: str | None = None,
 ) -> dict | None:
     """Run a tool-augmented scan for a single package.
 
@@ -268,7 +269,7 @@ def tool_use_scan(
         kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
-            "system": _SYSTEM_PROMPT,
+            "system": system_prompt or _SYSTEM_PROMPT,
             "messages": messages,
         }
         if tools_for_call:

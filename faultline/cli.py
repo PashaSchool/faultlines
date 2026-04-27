@@ -115,6 +115,17 @@ def analyze(
         ),
         is_flag=True,
     ),
+    sub_decompose: bool = typer.Option(
+        False,
+        "--sub-decompose",
+        help=(
+            "Sprint 3 (experimental): after dedup, split any feature with "
+            ">200 files into 2-6 sub-features via tool-augmented LLM. "
+            "Adds ~$0.30-0.60 per scan when 3-4 features cross the "
+            "threshold; free when none do."
+        ),
+        is_flag=True,
+    ),
     legacy: bool = typer.Option(
         False,
         "--legacy",
@@ -334,6 +345,7 @@ def analyze(
                     use_tools=tool_use,
                     repo_root=Path(repo_path),
                     dedup=dedup,
+                    sub_decompose=sub_decompose,
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(

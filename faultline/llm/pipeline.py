@@ -70,6 +70,7 @@ def run(
     use_tools: bool = False,
     repo_root=None,  # pathlib.Path; required when use_tools=True
     dedup: bool = False,
+    sub_decompose: bool = False,
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -196,6 +197,29 @@ def run(
             logger.info(
                 "pipeline: dedup collapsed %d → %d features (-%d)",
                 before, after, before - after,
+            )
+
+    # Stage 1.7 (Sprint 3): Sub-decomposition of oversized features.
+    # Runs after dedup (so we see the post-merge size) and before
+    # synthetic-bucket materialization (so docs / shared-infra never
+    # become candidates). Splits any feature above 200 files into
+    # 2-6 sub-features when the LLM proposes a clean split, otherwise
+    # leaves the parent intact.
+    if sub_decompose:
+        from faultline.llm.sub_decompose import sub_decompose_oversized
+        before = len(result.features)
+        result = sub_decompose_oversized(
+            result,
+            api_key=api_key,
+            model=model,
+            tracker=tracker,
+            repo_root=repo_root,
+        )
+        after = len(result.features)
+        if after != before:
+            logger.info(
+                "pipeline: sub-decompose %d → %d features (+%d)",
+                before, after, after - before,
             )
 
     # Stage 2: Materialize synthetic features for non-source buckets.
