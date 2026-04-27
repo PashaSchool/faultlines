@@ -433,6 +433,15 @@ def dedup_features(
         logger.info("dedup: model proposed 0 valid merges — no-op")
         return result
 
+    # Diagnostic: log every proposed merge BEFORE applying so we can
+    # see what the model intended even when post-apply state is
+    # ambiguous (e.g. overlapping `from` lists across merges).
+    for i, m in enumerate(merges):
+        logger.info(
+            "dedup: proposed merge[%d] into=%r from=%s",
+            i, m.into, m.sources,
+        )
+
     result, applied = _apply_merges(result, merges)
     logger.info(
         "dedup: applied %d merge(s); feature count → %d",

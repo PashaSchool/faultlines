@@ -69,6 +69,7 @@ def run(
     commit_context_days: int = 90,
     use_tools: bool = False,
     repo_root=None,  # pathlib.Path; required when use_tools=True
+    dedup: bool = False,
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -174,6 +175,28 @@ def run(
 
     if result is None:
         return None
+
+    # Stage 1.5 (Sprint 2): Cross-cluster dedup — collapse semantically
+    # identical features that ended up split across packages (e.g. on
+    # documenso "lib/document-signing" + "remix/document-signing" +
+    # "trpc/document-signing" all describe the same product domain).
+    # Runs BEFORE the docs/infra synthetic buckets are materialized
+    # so those protected names never appear in the dedup input.
+    if dedup:
+        from faultline.llm.dedup import dedup_features
+        before = len(result.features)
+        result = dedup_features(
+            result,
+            api_key=api_key,
+            model=model,
+            tracker=tracker,
+        )
+        after = len(result.features)
+        if after < before:
+            logger.info(
+                "pipeline: dedup collapsed %d → %d features (-%d)",
+                before, after, before - after,
+            )
 
     # Stage 2: Materialize synthetic features for non-source buckets.
     # deep_scan has its own internal docs partition as defensive fallback;

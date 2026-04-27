@@ -104,6 +104,17 @@ def analyze(
         ),
         is_flag=True,
     ),
+    dedup: bool = typer.Option(
+        False,
+        "--dedup",
+        help=(
+            "Sprint 2 (experimental): after per-package detection, run a "
+            "single Sonnet pass that sees every feature at once and merges "
+            "semantic duplicates split across packages (e.g. five "
+            "document-signing-* features → one). Adds ~$0.30 per scan."
+        ),
+        is_flag=True,
+    ),
     legacy: bool = typer.Option(
         False,
         "--legacy",
@@ -322,6 +333,7 @@ def analyze(
                     tracker=_cost_tracker,
                     use_tools=tool_use,
                     repo_root=Path(repo_path),
+                    dedup=dedup,
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(
@@ -846,15 +858,27 @@ def _inject_new_pipeline_descriptions(
     for feat in feature_map.features:
         if feat.description:
             continue
-        for desc_name, desc in descriptions.items():
-            if (
-                feat.name == desc_name
-                or feat.name in desc_name
-                or desc_name in feat.name
-                or feat.name.rstrip("s") == desc_name.rstrip("s")
-            ):
-                feat.description = desc
-                break
+        if feat.name in descriptions:
+            feat.description = descriptions[feat.name]
+            continue
+        # Bounded singular/plural fallback — only fires when the two
+        # names differ ONLY by a trailing 's', no slashes involved on
+        # either side. Anything broader (substring containment,
+        # path-segment match) was demonstrated to leak descriptions
+        # across unrelated features once dedup introduced longer
+        # multi-word names ('ai' inheriting 'email/auth-emails',
+        # 'web/surveys' inheriting the 'surveys' package).
+        if "/" not in feat.name:
+            feat_stem = feat.name.rstrip("s")
+            for desc_name, desc in descriptions.items():
+                if "/" in desc_name:
+                    continue
+                if (
+                    desc_name != feat.name
+                    and desc_name.rstrip("s") == feat_stem
+                ):
+                    feat.description = desc
+                    break
 
 
 def _strip_src_prefix(
