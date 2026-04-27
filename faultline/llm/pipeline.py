@@ -33,6 +33,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from faultline.analyzer.bucketizer import Bucket, bucket_summary, partition_files
+from faultline.analyzer.workspace import WorkspaceInfo, WorkspacePackage
 from faultline.llm.cost import CostTracker
 from faultline.llm.sonnet_scanner import (
     DeepScanResult,
@@ -43,7 +45,6 @@ from faultline.llm.sonnet_scanner import (
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from faultline.analyzer.repo_classifier import RepoStructure
-    from faultline.analyzer.workspace import WorkspaceInfo
     from faultline.models.types import Commit
 
 logger = logging.getLogger(__name__)
@@ -125,13 +126,25 @@ def run(
             len(commit_context.splitlines()),
         )
 
+    # Stage 1: Partition every file into one of five buckets. Only SOURCE
+    # files proceed to LLM detection. Docs / infra materialize as synthetic
+    # features below; tests and generated never reach the LLM.
+    partition = partition_files(analysis_files)
+    logger.info("pipeline: bucketizer partition: %s", bucket_summary(partition))
+
+    source_files = partition[Bucket.SOURCE]
+    doc_files = partition[Bucket.DOCUMENTATION]
+    infra_files = partition[Bucket.INFRASTRUCTURE]
+
     if _should_use_workspace_path(workspace):
+        filtered_workspace = _filter_workspace_sources(workspace, source_files)
         logger.info(
-            "pipeline: workspace path (%d packages)",
-            len(workspace.packages),
+            "pipeline: workspace path (%d packages, %d source files)",
+            len(filtered_workspace.packages),
+            sum(len(p.files) for p in filtered_workspace.packages),
         )
-        return deep_scan_workspace(
-            workspace,
+        result = deep_scan_workspace(
+            filtered_workspace,
             api_key=api_key,
             model=model,
             signatures=signatures,
@@ -139,17 +152,113 @@ def run(
             tracker=tracker,
             commit_context=commit_context,
         )
+    else:
+        logger.info(
+            "pipeline: single-call path (%d source files, %d docs filtered out)",
+            len(source_files),
+            len(doc_files),
+        )
+        result = _run_single_call(
+            analysis_files=source_files,
+            signatures=signatures,
+            api_key=api_key,
+            model=model,
+            tracker=tracker,
+            is_library=is_library,
+            commit_context=commit_context,
+        )
 
-    logger.info("pipeline: single-call path (%d files)", len(analysis_files))
-    return _run_single_call(
-        analysis_files=analysis_files,
-        signatures=signatures,
-        api_key=api_key,
-        model=model,
-        tracker=tracker,
-        is_library=is_library,
-        commit_context=commit_context,
+    if result is None:
+        return None
+
+    # Stage 2: Materialize synthetic features for non-source buckets.
+    # deep_scan has its own internal docs partition as defensive fallback;
+    # by pre-filtering here we make the bucketizer the single source of
+    # truth. Adding to setdefault merges cleanly either way.
+    if doc_files:
+        result.features.setdefault("documentation", []).extend(doc_files)
+        result.features["documentation"] = sorted(
+            set(result.features["documentation"])
+        )
+        result.descriptions.setdefault(
+            "documentation",
+            "Documentation, tutorials, examples, and marketing pages.",
+        )
+        logger.info(
+            "pipeline: materialized documentation feature (%d files)",
+            len(result.features["documentation"]),
+        )
+    if infra_files:
+        result.features.setdefault("shared-infra", []).extend(infra_files)
+        result.features["shared-infra"] = sorted(
+            set(result.features["shared-infra"])
+        )
+        logger.info(
+            "pipeline: merged infrastructure into shared-infra (%d new files)",
+            len(infra_files),
+        )
+
+    # Stage 3: Orphan validation. Every SOURCE file must land in exactly
+    # one feature. Anything missing is a bug we want to surface, not a
+    # silent fallback into shared-infra.
+    _validate_source_coverage(source_files, result.features)
+
+    return result
+
+
+def _filter_workspace_sources(
+    workspace: "WorkspaceInfo",
+    source_files: list[str],
+) -> "WorkspaceInfo":
+    """Return a copy of ``workspace`` with non-source files stripped.
+
+    Packages that end up empty are dropped — there is no point feeding
+    the per-package LLM a bucket of zero source files.
+    """
+    source_set = set(source_files)
+    filtered_packages: list[WorkspacePackage] = []
+    for pkg in workspace.packages:
+        pkg_sources = [f for f in pkg.files if f in source_set]
+        if pkg_sources:
+            filtered_packages.append(
+                WorkspacePackage(name=pkg.name, path=pkg.path, files=pkg_sources)
+            )
+    return WorkspaceInfo(
+        detected=workspace.detected,
+        manager=workspace.manager,
+        packages=filtered_packages,
+        root_files=[f for f in workspace.root_files if f in source_set],
     )
+
+
+def _validate_source_coverage(
+    source_files: list[str],
+    features: dict[str, list[str]],
+) -> None:
+    """Log a warning for any SOURCE file not attributed to any feature.
+
+    The legacy behaviour was a silent fold into ``shared-infra`` via the
+    ``_fold_stragglers_into_infra`` helper — that made quality regressions
+    invisible. Here we surface orphans as a log warning AND still
+    attribute them to ``shared-infra`` so downstream consumers don't
+    choke on missing files. The two goals are not in tension: the user
+    gets a working feature map AND we get a diagnostic signal.
+    """
+    attributed: set[str] = set()
+    for paths in features.values():
+        attributed.update(paths)
+    orphans = sorted(set(source_files) - attributed)
+    if not orphans:
+        return
+    logger.warning(
+        "pipeline: %d source files not attributed to any feature — "
+        "falling back into shared-infra. Sample (first 10):",
+        len(orphans),
+    )
+    for path in orphans[:10]:
+        logger.warning("  orphan: %s", path)
+    features.setdefault("shared-infra", []).extend(orphans)
+    features["shared-infra"] = sorted(set(features["shared-infra"]))
 
 
 def _should_use_workspace_path(workspace: "WorkspaceInfo | None") -> bool:
