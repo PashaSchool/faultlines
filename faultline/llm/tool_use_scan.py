@@ -40,7 +40,13 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_TOOL_BUDGET = 15
-DEFAULT_MAX_TOKENS = 8_192
+# Output token cap. The Anthropic Python SDK requires streaming for any
+# request whose max_tokens implies > 10 min processing — empirically
+# that threshold is ~21333 for Sonnet 4.6 without streaming. We sit
+# below that with margin. Note: very large packages (>800 files) can
+# still truncate the final JSON because every path lands in the output;
+# Sprint 3 (sub-decomposition) is the real fix for that.
+DEFAULT_MAX_TOKENS = 16_384
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
@@ -305,8 +311,10 @@ def tool_use_scan(
             parsed = _parse_features_json(text)
             if parsed is None:
                 logger.warning(
-                    "tool_use_scan(%s): could not parse final JSON from %d chars",
-                    package_name, len(text),
+                    "tool_use_scan(%s): could not parse final JSON from %d chars "
+                    "(stop_reason=%s). Head: %r ... Tail: %r",
+                    package_name, len(text), stop_reason,
+                    text[:300], text[-300:],
                 )
                 return None
             return parsed
