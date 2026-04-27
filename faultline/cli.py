@@ -716,6 +716,22 @@ def analyze(
                 feature_map, _new_pipeline_result.descriptions,
             )
 
+        # 6a.5 (Sprint 4): inject tool-augmented flow names. Runs only
+        # when --tool-flows produced flows — i.e. result.flows is
+        # populated. When this path is active we skip the legacy
+        # _detect_flows entirely (the new pipeline IS the flow source).
+        if (
+            _new_pipeline_result is not None
+            and _new_pipeline_result.flows
+            and tool_flows
+        ):
+            _inject_new_pipeline_flows(
+                feature_map,
+                _new_pipeline_result.flows,
+                _new_pipeline_result.flow_descriptions,
+                commits,
+            )
+
         # 6b. Read coverage data (if available)
         from faultline.analyzer.coverage import read_coverage
         coverage_data = read_coverage(str(repo.working_tree_dir), coverage_path=coverage)
@@ -735,7 +751,13 @@ def analyze(
                 "[dim]Skipping flow detection — repo classified as library "
                 "(set FAULTLINE_FORCE_FLOWS=1 to override)[/dim]"
             )
-        if flows and (not repo_structure.is_library or _force_flows):
+        # When --tool-flows produced flows already, skip the legacy
+        # Haiku detector — the new pipeline is the source of truth.
+        _tool_flows_active = bool(
+            tool_flows and _new_pipeline_result is not None
+            and _new_pipeline_result.flows
+        )
+        if flows and (not repo_structure.is_library or _force_flows) and not _tool_flows_active:
             from faultline.llm.flow_detector import detect_e2e_anchors
             e2e_anchors = detect_e2e_anchors(analysis_files)
             if e2e_anchors:
@@ -915,6 +937,61 @@ def _inject_new_pipeline_descriptions(
                 ):
                     feat.description = desc
                     break
+
+
+def _inject_new_pipeline_flows(
+    feature_map,
+    flows: dict[str, list[str]],
+    flow_descriptions: dict[str, dict[str, str]],
+    commits,
+) -> None:
+    """Attach Sprint 4 (tool-augmented) flow names + descriptions to the
+    feature_map.
+
+    Sprint 4's ``detect_flows_with_tools`` writes flow names into
+    ``DeepScanResult.flows`` and ``flow_descriptions`` (with optional
+    ``(entry: file:line)`` suffix on each description). The legacy
+    ``_detect_flows`` path is what builds ``Flow`` Pydantic objects
+    with full per-flow metrics (commits, bug_fixes, etc.); when the
+    user opts in to ``--tool-flows`` we want those names to surface
+    without re-running the legacy Haiku detector.
+
+    Minimal-impact strategy: per feature, build one Flow per Sprint 4
+    name. The flow's ``paths`` inherit the parent feature's path list
+    (Sprint 4 does flow-level naming, not file-level attribution), and
+    metric fields inherit the parent feature's totals. This produces
+    a Flow Pydantic object that survives serialization without
+    requiring schema changes.
+
+    Sprint 6 promotes ``entry_point_file``/``entry_point_line`` to
+    first-class Flow fields; for now they live in ``description``
+    via the trail Sprint 4 already encodes there.
+    """
+    if not flows:
+        return
+    from faultline.models.types import Flow
+
+    for feat in feature_map.features:
+        new_flow_names = flows.get(feat.name) or []
+        if not new_flow_names:
+            continue
+        per_flow_descs = flow_descriptions.get(feat.name) or {}
+        # Replace any pre-existing flows on the feature — Sprint 4 is
+        # the source of truth when --tool-flows is on.
+        feat.flows = [
+            Flow(
+                name=name,
+                description=per_flow_descs.get(name) or None,
+                paths=list(feat.paths),
+                authors=list(feat.authors),
+                total_commits=feat.total_commits,
+                bug_fixes=feat.bug_fixes,
+                bug_fix_ratio=feat.bug_fix_ratio,
+                last_modified=feat.last_modified,
+                health_score=feat.health_score,
+            )
+            for name in new_flow_names
+        ]
 
 
 def _strip_src_prefix(
