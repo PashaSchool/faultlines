@@ -889,6 +889,98 @@ def _enrich_crud_from_signatures(
     return added
 
 
+_CRUD_VERB_PREFIXES = frozenset({
+    "create", "add", "new",
+    "update", "edit", "patch", "modify",
+    "delete", "remove", "destroy",
+})
+
+_DOMAIN_SKIP_SEGMENTS = frozenset({
+    "api", "apis", "pages", "app", "apps", "src", "lib", "routes",
+    "router", "routers", "handler", "handlers", "controller",
+    "controllers", "service", "services", "v1", "v2", "v3",
+    "public", "internal", "shared", "common",
+})
+
+
+def _path_domain(path: str) -> str:
+    """Best-effort business-domain name for a file path.
+
+    Walks backwards from the filename, skipping dynamic-route brackets
+    (``[id]``, ``[...params]``) and structural segments (``api``,
+    ``pages``, ``v1``…) until a concrete directory name is found. Used
+    to tell ``apps/api/v1/pages/api/bookings/[id]/_delete.ts`` apart
+    from ``apps/api/v1/pages/api/api-keys/[id]/_delete.ts`` — both live
+    in the same package but represent different business domains.
+    """
+    parts = Path(path).parts
+    for part in reversed(parts[:-1]):
+        low = part.lower()
+        if not part or part.startswith("[") or part.startswith("("):
+            continue
+        if low in _DOMAIN_SKIP_SEGMENTS:
+            continue
+        return low
+    return ""
+
+
+def _flow_is_crud_verb_bucket(
+    flow: "SonnetFlow",
+    max_domains: int = 2,
+) -> bool:
+    """Return True when a CRUD-prefixed flow clusters unrelated domains.
+
+    cal.com's ``api`` feature landed ``delete-api-flow`` across 17
+    ``_delete.ts`` files spanning bookings, api-keys, attendees,
+    availabilities, etc. The name sounds like a user journey, but the
+    file set is really "every DELETE endpoint in the REST API" —
+    eight separate business operations crammed into one artefact.
+
+    Signal: flow name starts with a CRUD verb AND the file set has
+    more than ``max_domains`` distinct path domains. Non-CRUD flows
+    (``login-flow``, ``checkout-flow``) are left alone — a real user
+    journey is expected to touch several directories.
+    """
+    name = flow.name.lower().replace("-flow", "").strip("-")
+    parts = name.split("-")
+    if len(parts) < 2:
+        return False
+    if parts[0] not in _CRUD_VERB_PREFIXES:
+        return False
+    files = flow.files or []
+    if len(files) < 3:
+        # Too few files to conclude cross-domain; trust the name.
+        return False
+    domains = {_path_domain(p) for p in files}
+    domains.discard("")
+    return len(domains) > max_domains
+
+
+def _filter_verb_bucket_flows(features: list["SonnetFeature"]) -> int:
+    """Strip CRUD verb-bucket flows from each feature.
+
+    Complements ``_filter_noise_flows`` (which catches
+    ``state-management-flow`` style technical junk). This one catches
+    bucket flows that look legitimate — ``delete-api-flow`` —
+    but cluster files across unrelated business domains. Returns the
+    count removed for logging.
+    """
+    removed = 0
+    for feat in features:
+        if not feat.flows:
+            continue
+        keep: list[SonnetFlow] = []
+        for fl in feat.flows:
+            if _flow_is_crud_verb_bucket(fl):
+                removed += 1
+                continue
+            keep.append(fl)
+        feat.flows = keep
+    if removed:
+        logger.info("Flow filter: dropped %d CRUD verb-bucket flow(s)", removed)
+    return removed
+
+
 def _filter_noise_flows(features: list["SonnetFeature"]) -> int:
     """Strip technical / filename-derived flows from each feature.
 
@@ -1061,6 +1153,14 @@ def _finalize_result(
     # them, so Sonnet noise was reaching the final map unchallenged.
     if _last_scan_result is not None and not is_library:
         _filter_noise_flows(_last_scan_result.features)
+
+    # 4a+. Drop CRUD verb-buckets — flows whose name reads like a user
+    # journey but whose files span multiple business domains. cal.com's
+    # ``api`` feature emitted ``delete-api-flow`` spanning 17
+    # ``_delete.ts`` files across bookings/api-keys/attendees/…; the
+    # flow name is fake signal and inflates risk metrics misleadingly.
+    if _last_scan_result is not None and not is_library:
+        _filter_verb_bucket_flows(_last_scan_result.features)
 
     # 4b. Deduplicate flow names across features. When the LLM emits the
     # same flow (e.g., ``chat-conversation-flow``) under two features
@@ -1800,6 +1900,65 @@ def deep_scan_workspace(
         # for re-prefixing and pull flows/descriptions for the merged
         # workspace-level result.
         sub_mapping = sub_result.features
+
+        # Per-package coverage enforcement. The LLM commonly:
+        #   (a) returns sub-features that cover only a subset of the
+        #       package's files (typical: 70-80% on a 200-file package);
+        #   (b) labels some sub-features with infra-ish aliases like
+        #       "lib", "utils", "shared", which canonicalize to the
+        #       global shared-infra bucket and bleed package code out.
+        #
+        # Both leak real business code into a generic infra label and
+        # destroy the user's mental model: code in apps/web/onboarding/
+        # belongs to the web package, not to repo-level infra. Now that
+        # the top-level bucketizer materializes shared-infra from real
+        # repo configs, per-package shared-infra has no reason to exist.
+        #
+        # Fix: pop sub-features whose name canonicalizes to shared-infra,
+        # add their files to the leftover set, then attach the combined
+        # leftover to the largest remaining ("primary") sub-feature.
+        infra_sub_files: list[str] = []
+        for sub_name in list(sub_mapping.keys()):
+            if canonical_bucket_name(sub_name) == "shared-infra":
+                infra_sub_files.extend(sub_mapping.pop(sub_name))
+
+        pkg_rel_paths = {
+            f[len(pkg_prefix):] if pkg_prefix and f.startswith(pkg_prefix) else f
+            for f in pkg.files
+        }
+        attributed_rel = set()
+        for files in sub_mapping.values():
+            attributed_rel.update(files)
+        leftover_rel = sorted(
+            (pkg_rel_paths - attributed_rel) | set(infra_sub_files)
+        )
+        if leftover_rel:
+            primary = max(
+                sub_mapping.items(),
+                key=lambda kv: len(kv[1]),
+                default=None,
+            )
+            if primary is not None:
+                primary_name, primary_files = primary
+                sub_mapping[primary_name] = list(primary_files) + leftover_rel
+                logger.warning(
+                    "workspace: %s — %d files unattributed (or labelled "
+                    "infra-ish) by per-package LLM, attached to primary "
+                    "sub-feature '%s' (%d → %d)",
+                    pkg.name,
+                    len(leftover_rel),
+                    primary_name,
+                    len(primary_files),
+                    len(primary_files) + len(leftover_rel),
+                )
+            else:
+                sub_mapping[pkg.name] = list(leftover_rel)
+                logger.warning(
+                    "workspace: %s — %d files unattributed and no "
+                    "sub-feature to absorb them; kept under package name",
+                    pkg.name,
+                    len(leftover_rel),
+                )
 
         # Re-prefix file paths back to repo-relative form, building a
         # mapping from sub-feature name (in sub_result) → final feature

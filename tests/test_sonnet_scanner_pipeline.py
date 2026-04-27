@@ -33,9 +33,12 @@ from faultline.llm.sonnet_scanner import (
     _dedup_flows_across_features,
     _enrich_crud_from_signatures,
     _filter_noise_flows,
+    _filter_verb_bucket_flows,
     _finalize_result,
+    _flow_is_crud_verb_bucket,
     _merge_noise_singletons,
     _normalize_response,
+    _path_domain,
     _promote_library_root_candidates,
     build_commit_context,
     deep_scan,
@@ -872,9 +875,16 @@ class TestDeepScanWorkspace:
             for f in files:
                 assert f.startswith("apps/api/")
 
-    def test_per_package_shared_infra_merges_into_global(self) -> None:
-        """If a package call returns a 'shared-infra' sub-feature, it goes
-        into the global shared-infra bucket, not pkg.name/shared-infra."""
+    def test_per_package_shared_infra_absorbs_into_primary(self) -> None:
+        """Per-package coverage enforcement: when LLM labels a sub-feature
+        with an infra alias (``shared-infra``, ``utils``, ``lib``…), those
+        files belong to the package, not to repo-level shared-infra. They
+        absorb into the package's primary sub-feature so business code
+        stops bleeding into a generic catchall.
+
+        Repo-level shared-infra still receives ``workspace_info.root_files``
+        (real top-level configs and CI manifests).
+        """
         ws = _ws(
             packages=[_pkg("api", "apps/api", 200)],
             root_files=["package.json", ".github/workflows/ci.yml"],
@@ -886,12 +896,20 @@ class TestDeepScanWorkspace:
             })
             result = deep_scan_workspace(ws, api_key="sk-ant-test", min_files_for_llm=30)
 
-        assert "api/shared-infra" not in result
+        # Package code stays with the package. Single sub-feature collapses
+        # to bare package name (existing convention).
+        assert "api" in result
+        assert len(result["api"]) == 200
+        assert all(f.startswith("apps/api/") for f in result["api"])
+
+        # Repo-level shared-infra receives only the root files.
         assert "shared-infra" in result
-        # Package's shared-infra files + the workspace root files
-        assert any("apps/api/" in f for f in result["shared-infra"])
-        assert "package.json" in result["shared-infra"]
-        assert ".github/workflows/ci.yml" in result["shared-infra"]
+        assert sorted(result["shared-infra"]) == [
+            ".github/workflows/ci.yml",
+            "package.json",
+        ]
+        assert not any("apps/api/" in f for f in result["shared-infra"])
+        assert "api/shared-infra" not in result
 
     def test_root_files_become_shared_infra(self) -> None:
         ws = _ws(
@@ -1880,3 +1898,105 @@ class TestOpusMergeNormalization:
         }
         out = _normalize_response(data)
         assert out["merge"] == [{"target": "x", "source": ["y"]}]
+
+
+class TestPathDomain:
+    """Domain extraction powers the cross-domain verb-bucket filter."""
+
+    def test_skips_dynamic_route_bracket(self) -> None:
+        assert _path_domain("apps/api/v1/pages/api/bookings/[id]/_delete.ts") == "bookings"
+
+    def test_skips_parens_group_like_nextjs(self) -> None:
+        assert _path_domain("app/(dashboard)/settings/page.tsx") == "settings"
+
+    def test_skips_structural_segments(self) -> None:
+        assert _path_domain("apps/api/v1/pages/api/api-keys/[id]/_patch.ts") == "api-keys"
+
+    def test_falls_back_to_empty_for_unrecognised(self) -> None:
+        assert _path_domain("_delete.ts") == ""
+
+
+class TestCrudVerbBucketDetection:
+    def _flow(self, name: str, files: list[str]) -> SonnetFlow:
+        return SonnetFlow(name=name, files=files)
+
+    def test_calcom_delete_api_flow_flagged(self) -> None:
+        flow = self._flow("delete-api-flow", [
+            "apps/api/v1/pages/api/bookings/[id]/_delete.ts",
+            "apps/api/v1/pages/api/api-keys/[id]/_delete.ts",
+            "apps/api/v1/pages/api/attendees/[id]/_delete.ts",
+            "apps/api/v1/pages/api/availabilities/[id]/_delete.ts",
+            "apps/api/v1/pages/api/booking-references/[id]/_delete.ts",
+        ])
+        assert _flow_is_crud_verb_bucket(flow) is True
+
+    def test_single_domain_crud_flow_kept(self) -> None:
+        # Real user flow: delete-webhook-flow — all files under webhooks/
+        flow = self._flow("delete-webhook-flow", [
+            "apps/web/pages/webhooks/[id]/_delete.ts",
+            "packages/features/webhooks/lib/deleteWebhook.ts",
+            "packages/features/webhooks/lib/webhookDelete.test.ts",
+        ])
+        assert _flow_is_crud_verb_bucket(flow) is False
+
+    def test_non_crud_flow_kept_even_if_cross_domain(self) -> None:
+        # signup-flow legitimately spans auth/, email/, user/, validation/
+        flow = self._flow("signup-flow", [
+            "auth/signup.ts",
+            "email/welcome.ts",
+            "user/create.ts",
+            "validation/signup-form.ts",
+        ])
+        assert _flow_is_crud_verb_bucket(flow) is False
+
+    def test_too_few_files_trusts_name(self) -> None:
+        # <3 files — insufficient evidence, keep
+        flow = self._flow("create-api-flow", [
+            "apps/api/v1/lib/helpers/addRequestid.ts",
+            "apps/api/v1/test/lib/middleware/addRequestId.test.ts",
+        ])
+        assert _flow_is_crud_verb_bucket(flow) is False
+
+    def test_two_domains_still_kept(self) -> None:
+        # Threshold is >2 distinct domains; exactly 2 is fine (router + model pair)
+        flow = self._flow("create-booking-flow", [
+            "routers/booking.py",
+            "models/booking.py",
+            "services/booking_service.py",
+        ])
+        # All three resolve to "booking" → one domain → fine
+        assert _flow_is_crud_verb_bucket(flow) is False
+
+
+class TestFilterVerbBucketFlows:
+    def test_removes_bucket_preserves_real(self) -> None:
+        features = [
+            SonnetFeature(name="api", files=[], flows=[
+                SonnetFlow(name="delete-api-flow", files=[
+                    "apps/api/v1/pages/api/bookings/[id]/_delete.ts",
+                    "apps/api/v1/pages/api/api-keys/[id]/_delete.ts",
+                    "apps/api/v1/pages/api/attendees/[id]/_delete.ts",
+                    "apps/api/v1/pages/api/availabilities/[id]/_delete.ts",
+                ]),
+                SonnetFlow(name="update-api-flow", files=[
+                    "apps/api/v1/pages/api/bookings/[id]/_patch.ts",
+                    "apps/api/v1/pages/api/api-keys/[id]/_patch.ts",
+                    "apps/api/v1/pages/api/attendees/[id]/_patch.ts",
+                    "apps/api/v1/pages/api/availabilities/[id]/_patch.ts",
+                ]),
+            ]),
+            SonnetFeature(name="webhooks", files=[], flows=[
+                SonnetFlow(name="create-webhook-flow", files=[
+                    "apps/web/pages/webhooks/create.ts",
+                    "packages/features/webhooks/lib/create.ts",
+                    "packages/features/webhooks/lib/create.test.ts",
+                ]),
+            ]),
+        ]
+        removed = _filter_verb_bucket_flows(features)
+        assert removed == 2
+        assert [f.name for f in features[0].flows] == []
+        assert [f.name for f in features[1].flows] == ["create-webhook-flow"]
+
+    def test_empty_features_noop(self) -> None:
+        assert _filter_verb_bucket_flows([]) == 0
