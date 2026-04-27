@@ -1,3 +1,4 @@
+import re
 import typer
 from pathlib import Path
 from typing import Optional
@@ -939,6 +940,32 @@ def _inject_new_pipeline_descriptions(
                     break
 
 
+_ENTRY_TRAIL_RE = re.compile(r"\s*\(entry:\s*([^:)]+):(\d+)\)\s*$")
+
+
+def _split_entry_trail(desc: str | None) -> tuple[str | None, str | None, int | None]:
+    """Pull a Sprint 4 ``(entry: file:line)`` suffix off a flow description.
+
+    Returns ``(clean_description, entry_file, entry_line)``. When the
+    suffix is missing or malformed, returns the original description
+    plus ``(None, None)`` for the entry-point fields. The returned
+    description has the trailing whitespace + suffix stripped so it
+    reads cleanly in the dashboard.
+    """
+    if not desc:
+        return desc, None, None
+    m = _ENTRY_TRAIL_RE.search(desc)
+    if not m:
+        return desc, None, None
+    file_part = m.group(1).strip() or None
+    try:
+        line_part: int | None = int(m.group(2))
+    except ValueError:
+        line_part = None
+    cleaned = desc[: m.start()].rstrip() or None
+    return cleaned, file_part, line_part
+
+
 def _inject_new_pipeline_flows(
     feature_map,
     flows: dict[str, list[str]],
@@ -949,23 +976,17 @@ def _inject_new_pipeline_flows(
     feature_map.
 
     Sprint 4's ``detect_flows_with_tools`` writes flow names into
-    ``DeepScanResult.flows`` and ``flow_descriptions`` (with optional
-    ``(entry: file:line)`` suffix on each description). The legacy
-    ``_detect_flows`` path is what builds ``Flow`` Pydantic objects
-    with full per-flow metrics (commits, bug_fixes, etc.); when the
-    user opts in to ``--tool-flows`` we want those names to surface
-    without re-running the legacy Haiku detector.
+    ``DeepScanResult.flows`` and per-flow descriptions into
+    ``flow_descriptions`` with an ``(entry: file:line)`` suffix. We
+    parse that suffix back into first-class
+    ``Flow.entry_point_file`` / ``Flow.entry_point_line`` fields, so
+    downstream consumers (dashboard, MCP) read structured data
+    instead of regexing it back out.
 
-    Minimal-impact strategy: per feature, build one Flow per Sprint 4
-    name. The flow's ``paths`` inherit the parent feature's path list
-    (Sprint 4 does flow-level naming, not file-level attribution), and
-    metric fields inherit the parent feature's totals. This produces
-    a Flow Pydantic object that survives serialization without
-    requiring schema changes.
-
-    Sprint 6 promotes ``entry_point_file``/``entry_point_line`` to
-    first-class Flow fields; for now they live in ``description``
-    via the trail Sprint 4 already encodes there.
+    Per feature we build one ``Flow`` Pydantic per Sprint 4 name.
+    The flow's ``paths`` inherit the parent feature's path list
+    (Sprint 4 does flow-level naming, not file-level attribution),
+    and metric fields inherit the parent feature's totals.
     """
     if not flows:
         return
@@ -976,12 +997,16 @@ def _inject_new_pipeline_flows(
         if not new_flow_names:
             continue
         per_flow_descs = flow_descriptions.get(feat.name) or {}
-        # Replace any pre-existing flows on the feature — Sprint 4 is
-        # the source of truth when --tool-flows is on.
-        feat.flows = [
-            Flow(
+        new_flows: list[Flow] = []
+        for name in new_flow_names:
+            clean_desc, entry_file, entry_line = _split_entry_trail(
+                per_flow_descs.get(name),
+            )
+            new_flows.append(Flow(
                 name=name,
-                description=per_flow_descs.get(name) or None,
+                description=clean_desc,
+                entry_point_file=entry_file,
+                entry_point_line=entry_line,
                 paths=list(feat.paths),
                 authors=list(feat.authors),
                 total_commits=feat.total_commits,
@@ -989,9 +1014,8 @@ def _inject_new_pipeline_flows(
                 bug_fix_ratio=feat.bug_fix_ratio,
                 last_modified=feat.last_modified,
                 health_score=feat.health_score,
-            )
-            for name in new_flow_names
-        ]
+            ))
+        feat.flows = new_flows
 
 
 def _strip_src_prefix(

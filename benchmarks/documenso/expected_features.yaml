@@ -1,0 +1,126 @@
+# Ground truth for documenso — open-source DocuSign alternative.
+# Author: pkuzina, 2026-04-27
+# Sources: https://github.com/documenso/documenso README, repo browse,
+#          one full Sprint 1-5 scan as reference.
+# Status: minimal seed — covers the headline product surfaces. Expand
+#         with finer-grained sub-features in a follow-up pass.
+
+features:
+  - name: document-signing
+    description: |
+      Core signing pipeline — upload PDF, place fields, route to recipients,
+      capture signatures, render the audit certificate.
+    aliases:
+      - signing
+      - document-signing/document-preparation-dispatch
+      - document-signing/field-placement-signing
+      - lib/document-signing
+      - trpc/document-signing
+      - remix/document-signing
+      - pdf-certificate-signing
+    package_hint: lib / trpc / remix / signing
+
+  - name: envelope-management
+    description: Envelope lifecycle — creation, editing, recipient configuration, distribution.
+    aliases:
+      - envelope-management/envelope-lifecycle
+      - envelope-management/envelope-editor
+      - lib/envelope-templates
+      - trpc/envelope-management
+      - remix/envelope-editor
+      - document-upload-and-settings
+    package_hint: lib / trpc / remix
+
+  - name: template-management
+    description: Reusable signing templates plus public direct-link sharing and bulk send.
+    aliases:
+      - remix/template-management
+      - ui/template-flow
+    package_hint: web / ui
+
+  - name: organisation-and-team-management
+    description: Multi-tenant orgs, teams, members, groups, roles, invitations.
+    aliases:
+      - organisation-and-team-management/member-and-group-management
+      - organisation-and-team-management/organisation-lifecycle
+      - organisation-and-team-management/team-lifecycle
+      - team-and-organisation-management
+    package_hint: lib / trpc / remix
+
+  - name: user-authentication
+    description: Email/password, OAuth, passkeys, 2FA, sessions, password reset.
+    aliases:
+      - lib/user-authentication
+      - trpc/user-authentication-and-profile
+      - remix/user-authentication
+      - auth
+    package_hint: lib / trpc / remix / auth
+
+  - name: billing-and-subscriptions
+    description: Stripe billing, subscription management, invoice retrieval, billing portal.
+    aliases:
+      - lib/billing-and-subscriptions
+      - ee/stripe-billing
+      - remix/billing-and-subscriptions
+      - trpc/enterprise-billing-and-identity
+    package_hint: lib / ee / trpc / remix
+
+  - name: prisma-database
+    description: Prisma + Kysely client setup, schema, migrations, seeding, types.
+    aliases:
+      - prisma
+      - prisma/database-client-setup
+      - prisma/database-schema
+      - prisma/database-seeding
+      - database
+    package_hint: prisma
+
+  - name: email
+    description: Email rendering, branding, customization, transactional templates.
+    aliases:
+      - email/auth-emails
+      - email/email-rendering
+      - email/email-customization-preview
+      - email/survey-response-notifications
+    package_hint: email
+
+  - name: embedded-signing
+    description: Embedded signing/authoring SDK for third-party integrators.
+    aliases:
+      - lib/embedded-signing
+      - trpc/embedded-signing
+    package_hint: lib / trpc
+
+  - name: webhooks-and-public-api
+    description: Public REST API, API token management, outbound webhooks.
+    aliases:
+      - lib/webhook-and-public-api
+      - lib/webhooks-and-public-api
+      - public-api
+      - openpage-api
+      - api
+    package_hint: lib / openpage-api
+
+  - name: admin-console
+    description: Internal admin panel for support, subscriptions, user management.
+    aliases:
+      - admin-panel
+      - trpc/admin-and-embedding
+    package_hint: trpc / remix
+
+  - name: design-system
+    description: Reusable UI primitives, tokens, design components.
+    aliases:
+      - ui/design-system-primitives
+    package_hint: ui
+
+  - name: enterprise
+    description: Enterprise-tier features — SSO, audit, advanced auth.
+    aliases:
+      - ee
+      - ee/enterprise-package-metadata
+      - ee/email-domain-management
+      - ee/plan-usage-limits
+      - team-and-organisation-management/sso-and-auth-portal
+      - organisation-and-team-management/sso-and-auth-portal
+    package_hint: ee

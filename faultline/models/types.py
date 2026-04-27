@@ -37,6 +37,13 @@ class FileBlame(BaseModel):
 class Flow(BaseModel):
     name: str                  # "checkout-flow", "login-flow"
     description: str | None = None
+    # Sprint 4: tool-augmented flow detection grounds every flow in
+    # a real route handler / event subscription. These fields point
+    # at the file (and optional line) where that flow's user journey
+    # begins. Both are None for flows produced by the legacy Haiku
+    # detector (which doesn't record entry points).
+    entry_point_file: str | None = None
+    entry_point_line: int | None = None
     paths: list[str]           # files belonging to this flow
     authors: list[str]
     total_commits: int

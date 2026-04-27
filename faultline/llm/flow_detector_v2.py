@@ -264,16 +264,20 @@ def detect_flows_with_tools(
         flow_names = [f["name"] for f in flows]
         result.flows[name] = flow_names
 
-        # Encode entry-point info into the flow_description string.
-        # Sprint 6 will promote entry_point_file / entry_point_line to
-        # first-class fields on the Flow Pydantic model.
+        # Stash per-flow description with an "(entry: file:line)"
+        # suffix so the entry point survives end-to-end through the
+        # existing string-only flow_descriptions carrier. The
+        # downstream cli helper :func:`_inject_new_pipeline_flows`
+        # parses the suffix back out into the first-class
+        # Flow.entry_point_file / Flow.entry_point_line fields and
+        # strips it from the visible description.
         per_flow_descs: dict[str, str] = {}
         for f in flows:
             desc = f.get("description") or ""
             entry = f.get("entry_point_file") or ""
             line = f.get("entry_point_line") or 0
-            suffix = f" (entry: {entry}:{line})" if entry else ""
-            per_flow_descs[f["name"]] = (desc + suffix).strip()
+            tag = f" (entry: {entry}:{line})" if entry else ""
+            per_flow_descs[f["name"]] = (desc + tag).strip()
         result.flow_descriptions[name] = per_flow_descs
 
         logger.info(
