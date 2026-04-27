@@ -126,6 +126,18 @@ def analyze(
         ),
         is_flag=True,
     ),
+    tool_flows: bool = typer.Option(
+        False,
+        "--tool-flows",
+        help=(
+            "Sprint 4 (experimental): replace the legacy Haiku per-feature "
+            "flow detection with a tool-augmented Sonnet pass. The model "
+            "uses find_route_handlers / find_event_handlers to ground each "
+            "flow in a real entry point (file:line). Library repos skip "
+            "this pass. Adds ~$2-4 per scan."
+        ),
+        is_flag=True,
+    ),
     legacy: bool = typer.Option(
         False,
         "--legacy",
@@ -346,6 +358,7 @@ def analyze(
                     repo_root=Path(repo_path),
                     dedup=dedup,
                     sub_decompose=sub_decompose,
+                    tool_flows=tool_flows,
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(

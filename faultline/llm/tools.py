@@ -115,6 +115,50 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "find_route_handlers",
+        "description": (
+            "Scan source files for HTTP route handler declarations "
+            "across common frameworks: Next.js (app/page.tsx, "
+            "app/route.ts, pages/api), Express/Hono (app.get/post/...), "
+            "FastAPI (@app.get/@router.post), tRPC "
+            "(procedure.query/mutation), Remix (loader/action exports). "
+            "Returns up to 50 matches as 'path:line: snippet'. Useful "
+            "for grounding flow detection in real entry points."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path_glob": {
+                    "type": "string",
+                    "description": "Optional path prefix to limit the search (e.g. 'apps/web'). Defaults to whole repo.",
+                    "default": "",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "find_event_handlers",
+        "description": (
+            "Scan source files for event-driven entry points: DOM "
+            "addEventListener, EventEmitter on('event',...), webhook "
+            "handlers (Stripe Webhook.constructEvent etc.), queue/"
+            "worker subscriptions, chat-bot handlers (bot.on/client.on). "
+            "Returns up to 50 matches as 'path:line: snippet'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path_glob": {
+                    "type": "string",
+                    "description": "Optional path prefix to limit the search.",
+                    "default": "",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_file_commits",
         "description": (
             "Return the last N commit messages that touched a file. "
@@ -316,6 +360,135 @@ def grep_pattern(repo_root: Path, pattern: str, path_glob: str = "") -> str:
     return "\n".join(matches)
 
 
+_ROUTE_PATTERNS: tuple[tuple[str, str], ...] = (
+    # Next.js / Remix file-based routing — matched on path conventions
+    # rather than file content; we find these via filename match below.
+    # Express + Hono
+    ("express-or-hono-method",
+     r"\b(app|router|api)\.(get|post|put|patch|delete|all|use)\s*\("),
+    # FastAPI / Flask decorators
+    ("fastapi-flask-route",
+     r"@(?:app|router|blueprint)\.(?:get|post|put|patch|delete|api_route|route)\s*\("),
+    # tRPC
+    ("trpc-procedure",
+     r"\b(?:procedure|protectedProcedure|publicProcedure|t\.procedure)\s*[.\n]\s*(?:query|mutation|subscription)\s*\("),
+    # Remix loaders/actions (exported)
+    ("remix-loader-action",
+     r"^\s*export\s+(?:const|async\s+function)\s+(?:loader|action)\b"),
+    # Django urls.py path()
+    ("django-path",
+     r"\bpath\s*\(\s*['\"][^'\"]*['\"]\s*,\s*[A-Za-z_]"),
+    # NestJS decorators
+    ("nestjs-route",
+     r"@(?:Get|Post|Put|Patch|Delete|All)\s*\("),
+)
+
+
+_EVENT_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("addEventListener", r"\.addEventListener\s*\(\s*['\"]"),
+    ("emitter-on",       r"\.on\s*\(\s*['\"][a-zA-Z._-]+['\"]"),
+    ("queue-worker",     r"\b(?:queue|worker|consumer|subscriber)\.(?:process|on|subscribe|consume)\s*\("),
+    ("stripe-webhook",   r"\bstripe\.webhooks\.constructEvent\s*\("),
+    ("bot-on",           r"\b(?:bot|client|app)\.on\s*\(\s*['\"][a-zA-Z._-]+['\"]"),
+    ("react-hook-effect",
+     r"\buseEffect\s*\(\s*\(\s*\)\s*=>\s*\{\s*[A-Za-z_].*\.(?:addEventListener|subscribe)"),
+)
+
+
+_NEXTJS_FILENAME_RE = re.compile(
+    r"(?:^|/)(?:app|src/app)/.*?(?:page|route|layout|error|loading)\.(?:tsx?|jsx?)$"
+)
+_NEXTJS_PAGES_API_RE = re.compile(r"(?:^|/)pages/api/.*\.(?:tsx?|jsx?)$")
+
+
+def _scan_patterns(
+    repo_root: Path,
+    path_glob: str,
+    patterns: tuple[tuple[str, str], ...],
+    *,
+    extra_filename_matchers: tuple[re.Pattern, ...] = (),
+) -> str:
+    """Shared scanner for route + event tools.
+
+    Walks the source tree (filtered by bucketizer), applies regex
+    patterns, returns up to 50 matches as ``path:line: snippet``.
+    Reused by ``find_route_handlers`` / ``find_event_handlers``.
+    """
+    if path_glob:
+        try:
+            scan_root = _safe_resolve(repo_root, path_glob)
+        except ToolError as exc:
+            return f"ERROR: {exc}"
+        if not scan_root.exists():
+            return f"ERROR: path not found: {path_glob}"
+    else:
+        scan_root = repo_root.resolve()
+
+    root_resolved = repo_root.resolve()
+    compiled = [(name, re.compile(p, re.MULTILINE)) for name, p in patterns]
+    matches: list[str] = []
+    files_scanned = 0
+    deadline = time.monotonic() + GREP_TIMEOUT_SECONDS
+
+    walker = [scan_root] if scan_root.is_file() else scan_root.rglob("*")
+    for entry in walker:
+        if time.monotonic() > deadline:
+            matches.append("[TIMEOUT — stopped scanning]")
+            break
+        if len(matches) >= 50:
+            break
+        if files_scanned >= GREP_MAX_FILES_SCANNED:
+            matches.append("[FILE LIMIT — stopped scanning]")
+            break
+        if not entry.is_file():
+            continue
+        try:
+            rel = entry.resolve().relative_to(root_resolved).as_posix()
+        except (ValueError, OSError):
+            continue
+        if classify_file(rel) is not Bucket.SOURCE:
+            continue
+        files_scanned += 1
+
+        # Filename-based detection (Next.js file routing).
+        for fm_re in extra_filename_matchers:
+            if fm_re.search(rel):
+                matches.append(f"{rel}:1: [route-file]")
+                if len(matches) >= 50:
+                    return "\n".join(matches)
+                break
+
+        try:
+            text = entry.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for label, regex in compiled:
+            for m in regex.finditer(text):
+                lineno = text.count("\n", 0, m.start()) + 1
+                line = text[
+                    text.rfind("\n", 0, m.start()) + 1 : text.find("\n", m.end())
+                    if text.find("\n", m.end()) != -1 else len(text)
+                ]
+                matches.append(f"{rel}:{lineno}: [{label}] {line.strip()[:160]}")
+                if len(matches) >= 50:
+                    return "\n".join(matches)
+
+    if not matches:
+        return f"[NO MATCHES — scanned {files_scanned} files]"
+    return "\n".join(matches)
+
+
+def find_route_handlers(repo_root: Path, path_glob: str = "") -> str:
+    return _scan_patterns(
+        repo_root, path_glob, _ROUTE_PATTERNS,
+        extra_filename_matchers=(_NEXTJS_FILENAME_RE, _NEXTJS_PAGES_API_RE),
+    )
+
+
+def find_event_handlers(repo_root: Path, path_glob: str = "") -> str:
+    return _scan_patterns(repo_root, path_glob, _EVENT_PATTERNS)
+
+
 def get_file_commits(repo_root: Path, path: str, limit: int = 5) -> str:
     """Return the last N commit subjects that touched ``path``."""
     try:
@@ -388,5 +561,11 @@ def dispatch_tool(
         path = tool_input.get("path", "")
         limit = tool_input.get("limit", 5)
         return get_file_commits(repo_root, path, limit)
+
+    if name == "find_route_handlers":
+        return find_route_handlers(repo_root, tool_input.get("path_glob", ""))
+
+    if name == "find_event_handlers":
+        return find_event_handlers(repo_root, tool_input.get("path_glob", ""))
 
     return f"ERROR: unknown tool: {name}"

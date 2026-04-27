@@ -71,6 +71,7 @@ def run(
     repo_root=None,  # pathlib.Path; required when use_tools=True
     dedup: bool = False,
     sub_decompose: bool = False,
+    tool_flows: bool = False,
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -221,6 +222,21 @@ def run(
                 "pipeline: sub-decompose %d → %d features (+%d)",
                 before, after, after - before,
             )
+
+    # Stage 1.8 (Sprint 4): Tool-augmented flow detection. Replaces
+    # the legacy Haiku per-feature call when ``tool_flows`` is set.
+    # Library mode skips this entirely. Synthetic buckets
+    # (documentation / shared-infra / examples) are protected.
+    if tool_flows:
+        from faultline.llm.flow_detector_v2 import detect_flows_with_tools
+        result = detect_flows_with_tools(
+            result,
+            repo_root=repo_root,
+            is_library=is_library,
+            api_key=api_key,
+            model=model,
+            tracker=tracker,
+        )
 
     # Stage 2: Materialize synthetic features for non-source buckets.
     # deep_scan has its own internal docs partition as defensive fallback;

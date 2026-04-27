@@ -21,6 +21,8 @@ from faultline.llm.tools import (
     MAX_READ_LINES,
     TOOL_SCHEMAS,
     dispatch_tool,
+    find_event_handlers,
+    find_route_handlers,
     get_file_commits,
     grep_pattern,
     list_directory,
@@ -69,9 +71,13 @@ def git_repo(tmp_path: Path) -> Path:
 
 
 class TestSchemas:
-    def test_four_tools_exposed(self):
+    def test_six_tools_exposed(self):
         names = {s["name"] for s in TOOL_SCHEMAS}
-        assert names == {"read_file_head", "list_directory", "grep_pattern", "get_file_commits"}
+        assert names == {
+            "read_file_head", "list_directory", "grep_pattern",
+            "get_file_commits", "find_route_handlers",
+            "find_event_handlers",
+        }
 
     def test_each_schema_has_required_fields(self):
         for s in TOOL_SCHEMAS:
@@ -297,3 +303,111 @@ class TestDispatch:
     def test_missing_required_arg(self, repo: Path):
         out = dispatch_tool("read_file_head", {}, repo)
         assert out.startswith("ERROR:")
+
+    def test_routes_find_route_handlers(self, repo: Path):
+        out = dispatch_tool("find_route_handlers", {}, repo)
+        assert "ERROR" not in out
+
+    def test_routes_find_event_handlers(self, repo: Path):
+        out = dispatch_tool("find_event_handlers", {}, repo)
+        assert "ERROR" not in out
+
+
+# ── find_route_handlers ───────────────────────────────────────────────
+
+
+class TestFindRouteHandlers:
+    def test_express_methods_detected(self, repo: Path):
+        _write(repo, "api/server.ts",
+               "import express from 'express';\n"
+               "const app = express();\n"
+               "app.get('/users', listUsers);\n"
+               "app.post('/users', createUser);\n")
+        out = find_route_handlers(repo, "")
+        assert "api/server.ts" in out
+        assert "app.get" in out or "express-or-hono-method" in out
+
+    def test_fastapi_decorators_detected(self, repo: Path):
+        _write(repo, "py/api.py",
+               "from fastapi import FastAPI\n"
+               "app = FastAPI()\n"
+               "@app.get('/users')\n"
+               "async def list_users(): pass\n")
+        out = find_route_handlers(repo, "")
+        assert "py/api.py" in out
+
+    def test_trpc_procedure_detected(self, repo: Path):
+        _write(repo, "trpc/users.ts",
+               "export const usersRouter = router({\n"
+               "  list: protectedProcedure.query(({ ctx }) => ...),\n"
+               "});\n")
+        out = find_route_handlers(repo, "")
+        assert "trpc/users.ts" in out
+
+    def test_nextjs_filename_route(self, repo: Path):
+        _write(repo, "app/users/page.tsx", "export default function Page() {}\n")
+        _write(repo, "app/api/users/route.ts", "export async function GET() {}\n")
+        out = find_route_handlers(repo, "")
+        assert "app/users/page.tsx" in out
+        assert "app/api/users/route.ts" in out
+
+    def test_pages_api_filename_route(self, repo: Path):
+        _write(repo, "pages/api/login.ts",
+               "export default function handler(req, res) { res.json({}); }\n")
+        out = find_route_handlers(repo, "")
+        assert "pages/api/login.ts" in out
+
+    def test_path_glob_limits_scope(self, repo: Path):
+        _write(repo, "apps/web/server.ts", "app.get('/x', h);\n")
+        _write(repo, "other/server.ts", "app.get('/y', h);\n")
+        out = find_route_handlers(repo, "apps/web")
+        assert "apps/web/server.ts" in out
+        assert "other/server.ts" not in out
+
+    def test_no_matches(self, repo: Path):
+        _write(repo, "src/just-a-helper.ts", "export const x = 1;\n")
+        out = find_route_handlers(repo, "src")
+        assert "NO MATCHES" in out
+
+    def test_skips_non_source(self, repo: Path):
+        _write(repo, "node_modules/x/index.js", "app.get('/y', h);\n")
+        out = find_route_handlers(repo, "")
+        assert "node_modules" not in out
+
+    def test_invalid_glob(self, repo: Path):
+        out = find_route_handlers(repo, "../escape")
+        assert out.startswith("ERROR:")
+
+
+# ── find_event_handlers ───────────────────────────────────────────────
+
+
+class TestFindEventHandlers:
+    def test_addEventListener_detected(self, repo: Path):
+        _write(repo, "client/init.ts",
+               "window.addEventListener('click', handler);\n")
+        out = find_event_handlers(repo, "")
+        assert "client/init.ts" in out
+
+    def test_emitter_on_detected(self, repo: Path):
+        _write(repo, "queue/worker.ts",
+               "queue.on('failed', handleFailure);\n")
+        out = find_event_handlers(repo, "")
+        assert "queue/worker.ts" in out
+
+    def test_stripe_webhook_detected(self, repo: Path):
+        _write(repo, "billing/webhook.ts",
+               "const event = stripe.webhooks.constructEvent(body, sig, secret);\n")
+        out = find_event_handlers(repo, "")
+        assert "billing/webhook.ts" in out
+
+    def test_bot_handler_detected(self, repo: Path):
+        _write(repo, "bot/index.ts",
+               "bot.on('message', handler);\n")
+        out = find_event_handlers(repo, "")
+        assert "bot/index.ts" in out
+
+    def test_no_matches(self, repo: Path):
+        out = find_event_handlers(repo, "")
+        # repo fixture has billing/auth/utils — none have event hooks
+        assert "NO MATCHES" in out
