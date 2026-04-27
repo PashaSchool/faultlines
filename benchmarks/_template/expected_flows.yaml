@@ -1,0 +1,10 @@
+# Template flows. Library repos can leave this file empty (or omit it).
+
+flows:
+  - name: sign-in
+    feature: auth
+    description: User logs in via email/password or OAuth.
+
+  - name: cancel-subscription
+    feature: billing
+    description: Logged-in user cancels their plan.

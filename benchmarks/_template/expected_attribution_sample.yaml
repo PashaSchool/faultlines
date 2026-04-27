@@ -1,0 +1,11 @@
+# Template attribution sample. Pick 50 files via:
+#
+#   git ls-files | shuf -n 50 > /tmp/sample.txt
+#
+# Then label each with the feature name (or alias) it should belong to.
+
+samples:
+  - path: apps/web/modules/auth/login.tsx
+    expected: auth
+  - path: apps/web/modules/billing/checkout.ts
+    expected: billing

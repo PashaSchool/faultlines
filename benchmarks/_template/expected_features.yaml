@@ -1,0 +1,25 @@
+# Template — copy this directory under benchmarks/<repo>/ and fill in.
+# Each entry below is illustrative only.
+#
+# Match rule: a detected feature counts when its name equals any
+# entry in `name` or `aliases` (case-insensitive).
+
+features:
+  - name: auth
+    description: User authentication, sessions, OAuth providers, password reset.
+    aliases:
+      - api/auth
+      - user-authentication
+      - lib/user-auth
+    must_include:
+      - apps/web/modules/auth/login.tsx
+    package_hint: web
+
+  - name: billing
+    description: Subscription management, Stripe checkout, invoicing.
+    aliases:
+      - billing-and-subscriptions
+      - lib/billing
+    must_include:
+      - apps/web/modules/billing/index.ts
+    package_hint: web
