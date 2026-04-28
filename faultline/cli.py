@@ -2203,6 +2203,99 @@ def pull(
     rprint(f"  {applied} override(s) available · {renamed} renamed")
 
 
+@app.command(name="suggest-config")
+def suggest_config(
+    repo_path: str = typer.Argument(
+        ".",
+        help="Path to the git repository",
+    ),
+    write: bool = typer.Option(
+        False,
+        "--write",
+        help=(
+            "Write suggestions to .faultline.yaml instead of "
+            "printing to stdout. Existing file is preserved — "
+            "suggestions land under a fresh ``# Suggested by "
+            "faultline suggest-config`` header."
+        ),
+        is_flag=True,
+    ),
+):
+    """Suggest a starter ``.faultline.yaml`` from repo signals.
+
+    Discovers canonical-feature names from:
+      - Workspace package names (package.json, pyproject.toml,
+        Cargo.toml).
+      - CODEOWNERS team assignments (root, .github/, docs/).
+
+    Prints the suggestions in YAML form so you can review and
+    drop into ``.faultline.yaml`` (or pass ``--write`` to do it
+    automatically).
+    """
+    from faultline.analyzer.auto_alias_discoverer import discover_aliases
+    from faultline.analyzer.git import get_tracked_files, load_repo
+    import yaml as _yaml
+
+    repo_path_resolved = str(Path(repo_path).resolve())
+    try:
+        repo = load_repo(repo_path_resolved)
+    except Exception as exc:
+        console.print(f"[red]Error loading repo:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    files = get_tracked_files(repo)
+    rules = discover_aliases(repo_path_resolved, files)
+
+    if not rules:
+        console.print(
+            "[yellow]No signals found.[/yellow] No workspace manifest "
+            "and no CODEOWNERS file detected — there is nothing to "
+            "suggest. You can hand-author a `.faultline.yaml` "
+            "instead."
+        )
+        return
+
+    yaml_block: dict = {"features": {}}
+    for r in rules:
+        entry: dict[str, object] = {}
+        if r.description:
+            entry["description"] = r.description
+        if r.variants:
+            entry["variants"] = list(r.variants)
+        yaml_block["features"][r.canonical] = entry
+
+    rendered = _yaml.safe_dump(
+        yaml_block, sort_keys=False, allow_unicode=True, indent=2,
+    )
+    header = (
+        "# Suggested by `faultline suggest-config` — review and edit "
+        "before scanning.\n"
+        "# Each feature below was derived from a workspace package "
+        "name or a CODEOWNERS team.\n"
+        "# Empty `variants` is fine; the engine fills in matches "
+        "automatically when you run `faultline analyze`.\n\n"
+    )
+
+    if write:
+        target = Path(repo_path_resolved) / ".faultline.yaml"
+        if target.exists():
+            console.print(
+                f"[yellow]{target.name} already exists.[/yellow] "
+                "Suggestions printed to stdout instead — merge "
+                "manually."
+            )
+            console.print()
+            console.print(header + rendered, end="")
+        else:
+            target.write_text(header + rendered, encoding="utf-8")
+            console.print(
+                f"[green]✓[/green] Wrote {len(rules)} suggested "
+                f"canonical(s) to {target}"
+            )
+    else:
+        console.print(header + rendered, end="")
+
+
 @app.command()
 def version():
     """Shows the faultline version."""
