@@ -111,15 +111,40 @@ _RE_FASTAPI_ROUTE = re.compile(
     r"\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
 )
 
-# tRPC v10/v11 procedure declarations:
-#   userRouter = router({ list: protectedProcedure.query(...) })
-# We extract the local symbol name (``list``) — Day 2 will join
-# this against client-side ``trpc.users.list.useQuery()`` calls.
+# tRPC v10/v11 procedure declarations come in TWO common shapes
+# in real codebases.
+#
+# Shape A — inline inside a router({ ... }) block:
+#   userRouter = router({
+#     list: protectedProcedure.query(...),
+#     create: t.procedure.input(...).mutation(...),
+#   })
+# We extract the LOCAL key (``list`` / ``create``) which is the
+# name the client calls.
 _RE_TRPC_PROCEDURE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*:\s*(?:t\.)?"
-    r"(?:protected|public)?[Pp]rocedure[\s\S]{0,200}?"
+    r"(?:protected|public|authenticated)?[Pp]rocedure[\s\S]{0,200}?"
     r"\.(?:query|mutation|subscription)\s*\("
 )
+# Shape B — exported standalone procedure (one file = one route):
+#   export const findRecipientSuggestionsRoute = authenticatedProcedure
+#     .input(...)
+#     .output(...)
+#     .query(async ({...}) => {...});
+# Common in larger codebases (documenso, cal.com etc) where each
+# procedure lives in its own file and the router file just
+# assembles them. We extract the exported const name; client-
+# matching strips a trailing ``Route`` / ``Handler`` / ``Procedure``
+# suffix so ``findRecipientSuggestionsRoute`` matches client calls
+# to ``findRecipientSuggestions``.
+_RE_TRPC_STANDALONE = re.compile(
+    r"export\s+const\s+(?P<name>[A-Za-z_]\w*)\s*="
+    r"\s*(?:\w+\.)?"
+    r"(?:protected|public|authenticated)?[Pp]rocedure"
+    r"[\s\S]{0,800}?"  # chained .input() / .output() / etc.
+    r"\.(?:query|mutation|subscription)\s*\("
+)
+_TRPC_NAME_SUFFIXES = ("Route", "Handler", "Procedure")
 
 
 def _normalize_path(path: str) -> str:
@@ -201,18 +226,52 @@ def _routes_from_express_or_fastapi(
 def _routes_from_trpc(
     rel_path: str, source: str,
 ) -> list[RouteRegistration]:
-    # Heuristic: only inspect files that look like tRPC routers
-    # (contain ``router({`` or ``createTRPCRouter``).
-    if "router({" not in source and "createTRPCRouter" not in source:
+    # Inspect files that show ANY tRPC fingerprint — router blocks
+    # OR exported standalone procedure declarations. Documenso /
+    # cal.com / next-forge style has procedures split across many
+    # files with one file = one procedure.
+    has_router_block = "router({" in source or "createTRPCRouter" in source
+    has_standalone = (
+        ("Procedure" in source or "procedure" in source)
+        and (
+            ".query(" in source
+            or ".mutation(" in source
+            or ".subscription(" in source
+        )
+    )
+    if not has_router_block and not has_standalone:
         return []
+
     out: list[RouteRegistration] = []
+    seen: set[str] = set()  # avoid double-emitting same name in one file
+
+    def _strip_trpc_suffix(name: str) -> str:
+        """``findRecipientSuggestionsRoute`` → ``findRecipientSuggestions``."""
+        for suf in _TRPC_NAME_SUFFIXES:
+            if name.endswith(suf) and len(name) > len(suf):
+                return name[: -len(suf)]
+        return name
+
+    # Shape A — inline router({ key: procedure.query(...) })
     for m in _RE_TRPC_PROCEDURE.finditer(source):
         name = m.group("name")
-        # tRPC procedures are addressed by name, not URL. Use a
-        # synthetic path ``trpc:<router-segment>/<procedure>``.
-        # For Day 1 we just record the procedure name; Day 2's
-        # client-side matcher will compare on procedure name
-        # within the same file scope.
+        if name in seen:
+            continue
+        seen.add(name)
+        line = source.count("\n", 0, m.start()) + 1
+        out.append(RouteRegistration(
+            file=rel_path, method="*",
+            pattern=f"trpc:{name}",
+            framework="trpc", line=line,
+        ))
+
+    # Shape B — exported standalone procedure constants
+    for m in _RE_TRPC_STANDALONE.finditer(source):
+        raw_name = m.group("name")
+        name = _strip_trpc_suffix(raw_name)
+        if name in seen:
+            continue
+        seen.add(name)
         line = source.count("\n", 0, m.start()) + 1
         out.append(RouteRegistration(
             file=rel_path, method="*",

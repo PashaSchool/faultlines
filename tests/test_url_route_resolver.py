@@ -113,6 +113,58 @@ class TestServerRouteExtraction:
         assert "trpc:list" in names
         assert "trpc:create" in names
 
+    def test_trpc_standalone_procedure_with_route_suffix(self, tmp_path: Path):
+        # Documenso-style: one file = one procedure, exported with
+        # ``Route`` suffix. Client calls strip the suffix.
+        _write(tmp_path, "trpc/recipient/find-suggestions.ts",
+               "import { authenticatedProcedure } from '../trpc';\n"
+               "export const findRecipientSuggestionsRoute = authenticatedProcedure\n"
+               "  .input(ZGetRecipientSuggestionsRequestSchema)\n"
+               "  .output(ZGetRecipientSuggestionsResponseSchema)\n"
+               "  .query(async ({ input, ctx }) => { return []; });\n")
+        reg = build_route_registry(tmp_path, ["trpc/recipient/find-suggestions.ts"])
+        names = {r.pattern for r in reg.routes if r.framework == "trpc"}
+        # Suffix stripped — client-call ``findRecipientSuggestions``
+        # matches without needing the ``Route`` part
+        assert "trpc:findRecipientSuggestions" in names
+
+    def test_trpc_standalone_with_authenticated_procedure(self, tmp_path: Path):
+        # ``authenticatedProcedure`` is documenso's flavour
+        _write(tmp_path, "trpc/billing/checkout.ts",
+               "export const checkoutRoute = authenticatedProcedure\n"
+               "  .mutation(({ ctx }) => null);\n")
+        reg = build_route_registry(tmp_path, ["trpc/billing/checkout.ts"])
+        names = {r.pattern for r in reg.routes if r.framework == "trpc"}
+        assert "trpc:checkout" in names
+
+    def test_trpc_standalone_without_suffix(self, tmp_path: Path):
+        # Plain ``export const send = procedure...`` no suffix —
+        # client calls match the bare name.
+        _write(tmp_path, "trpc/send.ts",
+               "export const send = procedure.mutation(() => {});\n")
+        reg = build_route_registry(tmp_path, ["trpc/send.ts"])
+        names = {r.pattern for r in reg.routes if r.framework == "trpc"}
+        assert "trpc:send" in names
+
+    def test_trpc_handler_suffix(self, tmp_path: Path):
+        _write(tmp_path, "trpc/x.ts",
+               "export const createUserHandler = procedure.mutation(() => {});\n")
+        reg = build_route_registry(tmp_path, ["trpc/x.ts"])
+        names = {r.pattern for r in reg.routes if r.framework == "trpc"}
+        assert "trpc:createUser" in names
+
+    def test_trpc_no_double_emit(self, tmp_path: Path):
+        # File has BOTH a router block AND a standalone export with
+        # the same name. We should emit it once.
+        _write(tmp_path, "trpc/dup.ts",
+               "export const usersRouter = router({\n"
+               "  list: procedure.query(() => []),\n"
+               "});\n"
+               "export const list = procedure.query(() => []);\n")
+        reg = build_route_registry(tmp_path, ["trpc/dup.ts"])
+        list_routes = [r for r in reg.routes if r.pattern == "trpc:list"]
+        assert len(list_routes) == 1
+
     def test_no_route_in_plain_file(self, tmp_path: Path):
         _write(tmp_path, "lib/utils.ts", "export const x = 1;\n")
         reg = build_route_registry(tmp_path, ["lib/utils.ts"])
