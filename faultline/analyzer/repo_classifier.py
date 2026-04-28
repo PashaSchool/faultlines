@@ -325,12 +325,28 @@ def detect_library(
     if (repo_root / "go.mod").exists():
         has_main_go = (repo_root / "main.go").exists()
         has_cmd_dir = (repo_root / "cmd").is_dir()
-        if not has_main_go and not has_cmd_dir:
+        # Walk the files list for any *.go file under common bin
+        # subdirectories — covers projects that use ``cli/``,
+        # ``bin/``, or workspace-style ``apps/<name>/main.go``
+        # instead of the conventional ``cmd/`` layout.
+        has_nested_main = any(
+            f.endswith("main.go") and not f.startswith("vendor/")
+            for f in files
+        )
+        if not has_main_go and not has_cmd_dir and not has_nested_main:
             lib_votes += 2
-            signals.append("go.mod present with no main.go and no cmd/ directory")
+            signals.append(
+                "go.mod present with no main.go, no cmd/, and no nested "
+                "*/main.go in tracked files"
+            )
         else:
             app_votes += 1
-            signals.append("go.mod with main.go or cmd/ present")
+            why = (
+                "main.go at root" if has_main_go
+                else "cmd/ directory" if has_cmd_dir
+                else "nested */main.go in tracked files"
+            )
+            signals.append(f"go.mod with {why}")
 
     # ── Rust signals ──────────────────────────────────────────────────
     cargo_toml = repo_root / "Cargo.toml"
@@ -340,13 +356,31 @@ def detect_library(
         except OSError:
             text = ""
         has_lib = "[lib]" in text
-        has_bin = "[[bin]]" in text or (repo_root / "src" / "main.rs").exists()
+        # Cargo workspace members may declare bins via their own
+        # Cargo.toml — check the file list for any nested
+        # ``*/src/main.rs`` outside ``target/``.
+        nested_bin_files = [
+            f for f in files
+            if f.endswith("src/main.rs") and not f.startswith("target/")
+        ]
+        has_bin = (
+            "[[bin]]" in text
+            or (repo_root / "src" / "main.rs").exists()
+            or bool(nested_bin_files)
+        )
         if has_lib and not has_bin:
             lib_votes += 2
-            signals.append("Cargo.toml has [lib] and no [[bin]]/main.rs")
+            signals.append(
+                "Cargo.toml has [lib] and no [[bin]]/main.rs in workspace"
+            )
         elif has_bin:
             app_votes += 1
-            signals.append("Cargo.toml has [[bin]] or src/main.rs")
+            why = (
+                "[[bin]] block" if "[[bin]]" in text
+                else "src/main.rs at root" if (repo_root / "src" / "main.rs").exists()
+                else f"nested */src/main.rs ({nested_bin_files[0]})"
+            )
+            signals.append(f"Cargo.toml has {why}")
 
     # ── Verdict ───────────────────────────────────────────────────────
     is_library = lib_votes > app_votes

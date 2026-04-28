@@ -194,6 +194,26 @@ class TestGoDetection:
         is_lib, _ = detect_library(tmp_path, files=["cmd/server/main.go"])
         assert not is_lib
 
+    def test_app_with_nested_main_go_outside_cmd(self, tmp_path) -> None:
+        # Some Go projects use cli/, bin/, or apps/<name>/main.go
+        # instead of the conventional cmd/ layout.
+        (tmp_path / "go.mod").write_text("module github.com/foo/app\n")
+        is_lib, signals = detect_library(
+            tmp_path, files=["cli/myapp/main.go", "internal/foo.go"],
+        )
+        assert not is_lib
+        assert any("nested" in s.lower() for s in signals)
+
+    def test_vendor_main_go_does_not_count_as_app(self, tmp_path) -> None:
+        # vendor/ is third-party deps — main.go inside doesn't
+        # promote the project to application.
+        (tmp_path / "go.mod").write_text("module github.com/foo/lib\n")
+        (tmp_path / "lib.go").write_text("package lib\n")
+        is_lib, _ = detect_library(
+            tmp_path, files=["lib.go", "vendor/some/dep/main.go"],
+        )
+        assert is_lib
+
 
 # ── Rust ──────────────────────────────────────────────────────────────────
 
@@ -212,6 +232,28 @@ class TestRustDetection:
         (tmp_path / "src" / "main.rs").write_text("fn main() {}")
         is_lib, _ = detect_library(tmp_path, files=["src/main.rs"])
         assert not is_lib
+
+    def test_cargo_workspace_with_member_bin(self, tmp_path) -> None:
+        # Cargo workspace where the bin lives inside a member crate.
+        (tmp_path / "Cargo.toml").write_text(
+            "[workspace]\nmembers = ['mycli', 'mylib']\n"
+        )
+        is_lib, signals = detect_library(
+            tmp_path,
+            files=["mycli/src/main.rs", "mylib/src/lib.rs"],
+        )
+        assert not is_lib
+        assert any("nested" in s.lower() or "main.rs" in s for s in signals)
+
+    def test_target_main_rs_does_not_count(self, tmp_path) -> None:
+        # target/ is build output — bins there are generated, not real.
+        (tmp_path / "Cargo.toml").write_text(
+            "[package]\nname = 'mylib'\n[lib]\nname = 'mylib'\n"
+        )
+        is_lib, _ = detect_library(
+            tmp_path, files=["target/debug/build/foo/src/main.rs"],
+        )
+        assert is_lib
 
 
 # ── Fallback ──────────────────────────────────────────────────────────────
