@@ -57,6 +57,22 @@ _PROTECTED_NAMES: frozenset[str] = frozenset({
 })
 
 
+# Universally tooling-only package names. When a workspace has one of
+# these as a top-level package, it's almost never a product feature —
+# it's eslint config, tsconfig template, etc. Folded into
+# ``shared-infra`` automatically by the pipeline so users don't have
+# to enumerate them in ``.faultline.yaml`` skip_features. List is
+# intentionally narrow: only names that are tooling in ~99% of repos.
+TOOLING_PACKAGE_NAMES: frozenset[str] = frozenset({
+    "tsconfig", "eslint-config", "prettier-config", "tailwind-config",
+    "postcss-config", "babel-config", "stylelint-config",
+    "vitest-config", "jest-config", "playwright-config",
+    "config-eslint", "config-typescript", "config-prettier",
+    "config-tailwind",
+    "tooling", "build-config",
+})
+
+
 # ── System prompt ─────────────────────────────────────────────────────
 
 

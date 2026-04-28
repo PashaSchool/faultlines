@@ -179,6 +179,15 @@ def run(
     if result is None:
         return None
 
+    # Stage 1.4: Auto-fold universally-tooling packages into
+    # shared-infra. Things like ``tsconfig``, ``eslint-config``,
+    # ``prettier-config`` are tooling in ~99% of repos — they should
+    # never show up as a product feature on the dashboard. Always
+    # runs (no flag, no user config required); users can override
+    # by listing the name in ``.faultline.yaml`` features (which
+    # then aliases it to a real canonical, taking precedence).
+    _auto_fold_tooling(result)
+
     # Stage 1.5 (Sprint 2): Cross-cluster dedup — collapse semantically
     # identical features that ended up split across packages (e.g. on
     # documenso "lib/document-signing" + "remix/document-signing" +
@@ -306,6 +315,42 @@ def run(
     _validate_source_coverage(source_files, result.features)
 
     return result
+
+
+def _auto_fold_tooling(result: DeepScanResult) -> None:
+    """Move universally-tooling packages into ``shared-infra``.
+
+    Looks at every detected feature whose name (last path segment)
+    matches :data:`faultline.llm.dedup.TOOLING_PACKAGE_NAMES` and
+    folds its files into the ``shared-infra`` bucket. The original
+    feature key disappears.
+
+    No-op when no feature matches. Always runs — users do not need
+    to enumerate these in ``.faultline.yaml`` skip_features.
+    Universal tooling-by-package-name knowledge belongs in the
+    engine, not in every user's repo config.
+    """
+    from faultline.llm.dedup import TOOLING_PACKAGE_NAMES
+
+    folded: list[str] = []
+    for name in list(result.features.keys()):
+        last = name.rsplit("/", 1)[-1].lower()
+        if last in TOOLING_PACKAGE_NAMES:
+            files = result.features.pop(name)
+            result.features.setdefault("shared-infra", []).extend(files)
+            result.descriptions.pop(name, None)
+            result.flows.pop(name, None)
+            result.flow_descriptions.pop(name, None)
+            folded.append(name)
+
+    if folded:
+        # Sort + dedup the shared-infra path list
+        si = result.features.get("shared-infra", [])
+        result.features["shared-infra"] = sorted(set(si))
+        logger.info(
+            "pipeline: auto-folded %d tooling package(s) into shared-infra: %s",
+            len(folded), folded,
+        )
 
 
 def _filter_workspace_sources(
