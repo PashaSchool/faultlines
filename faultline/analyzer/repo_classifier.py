@@ -165,6 +165,46 @@ _PY_APP_ENTRYPOINTS = (
 )
 
 
+def _has_pyproject_console_script(pyproject_path: Path) -> bool:
+    """True when ``pyproject.toml`` registers any console script.
+
+    Looks at both standard ``[project.scripts]`` (PEP 621) and
+    ``[tool.poetry.scripts]`` (Poetry). A non-empty mapping under
+    either is enough — we don't try to validate the entry-point
+    targets.
+
+    Tolerates malformed TOML / missing tomllib (fallback to a
+    shallow regex scan) so the classifier never crashes on weird
+    pyproject files.
+    """
+    try:
+        import tomllib  # Python 3.11+
+        try:
+            data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        except (tomllib.TOMLDecodeError, OSError):
+            return False
+        proj_scripts = (data.get("project") or {}).get("scripts") or {}
+        if isinstance(proj_scripts, dict) and proj_scripts:
+            return True
+        poetry_scripts = (
+            ((data.get("tool") or {}).get("poetry") or {}).get("scripts") or {}
+        )
+        return isinstance(poetry_scripts, dict) and bool(poetry_scripts)
+    except ImportError:  # pragma: no cover — Python < 3.11 fallback
+        try:
+            text = pyproject_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        # Shallow regex: header line + at least one ``key = "..."``
+        # entry beneath it before the next ``[`` header.
+        import re as _re
+        for header in (r"\[project\.scripts\]", r"\[tool\.poetry\.scripts\]"):
+            block = _re.search(rf"{header}\n((?:[^\[]+\n)+)", text)
+            if block and _re.search(r"^\s*\w[\w-]*\s*=", block.group(1), _re.MULTILINE):
+                return True
+        return False
+
+
 def detect_library(
     repo_root: Path,
     files: list[str],
@@ -251,19 +291,35 @@ def detect_library(
     pyproject = repo_root / "pyproject.toml"
     setup_py = repo_root / "setup.py"
     if pyproject.exists() or setup_py.exists():
-        # Has a packaging manifest — check for app entry points at root
+        # Has a packaging manifest — check for app entry points at
+        # the repo root AND for registered console scripts in
+        # pyproject.toml. CLI tools (faultline, click, typer apps,
+        # etc.) typically register entry points in
+        # ``[project.scripts]`` / ``[tool.poetry.scripts]`` instead
+        # of dropping a main.py at repo root, so the file-only
+        # check produces a false-positive library verdict on every
+        # such CLI.
         has_root_entrypoint = any(
             (repo_root / name).exists() for name in _PY_APP_ENTRYPOINTS
         )
-        if not has_root_entrypoint:
+        has_console_script = (
+            _has_pyproject_console_script(pyproject)
+            if pyproject.exists() else False
+        )
+        if has_root_entrypoint or has_console_script:
+            app_votes += 1
+            if has_console_script:
+                signals.append(
+                    "pyproject.toml registers console script(s) — treated as application"
+                )
+            else:
+                signals.append("python app entrypoint found at repo root")
+        else:
             lib_votes += 2
             signals.append(
                 "pyproject.toml/setup.py present with no main.py/app.py/manage.py "
-                "at repo root"
+                "at repo root and no console scripts in [project.scripts]"
             )
-        else:
-            app_votes += 1
-            signals.append("python app entrypoint found at repo root")
 
     # ── Go signals ────────────────────────────────────────────────────
     if (repo_root / "go.mod").exists():

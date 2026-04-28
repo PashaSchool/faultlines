@@ -128,6 +128,47 @@ class TestPythonDetection:
         is_lib, _ = detect_library(tmp_path, files=["asgi.py"])
         assert not is_lib
 
+    def test_app_with_pep621_console_script(self, tmp_path) -> None:
+        """CLI tools register entry points under [project.scripts]
+        instead of dropping main.py at root. They must classify as
+        application — see SELF_AUDIT_COMPARISON.md for the bug
+        this guards against."""
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'mycli'\n"
+            "[project.scripts]\nmycli = 'mycli.cli:app'\n"
+        )
+        (tmp_path / "mycli").mkdir()
+        (tmp_path / "mycli" / "cli.py").write_text("def app(): pass\n")
+        is_lib, signals = detect_library(tmp_path, files=["mycli/cli.py"])
+        assert not is_lib
+        assert any("console script" in s.lower() for s in signals)
+
+    def test_app_with_poetry_script(self, tmp_path) -> None:
+        """Poetry registers under [tool.poetry.scripts]."""
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.poetry]\nname = 'mycli'\n"
+            "[tool.poetry.scripts]\nmycli = 'mycli.cli:app'\n"
+        )
+        is_lib, signals = detect_library(tmp_path, files=[])
+        assert not is_lib
+        assert any("console script" in s.lower() for s in signals)
+
+    def test_library_pyproject_with_empty_scripts_table(self, tmp_path) -> None:
+        # An empty [project.scripts] block doesn't count as an app.
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'mylib'\n[project.scripts]\n"
+        )
+        is_lib, signals = detect_library(tmp_path, files=[])
+        assert is_lib
+        assert any("pyproject.toml" in s for s in signals)
+
+    def test_malformed_pyproject_does_not_crash(self, tmp_path) -> None:
+        # Corrupted TOML — classifier must not raise.
+        (tmp_path / "pyproject.toml").write_text("not valid [[[ toml")
+        is_lib, _ = detect_library(tmp_path, files=[])
+        # Falls back to library default for bare pyproject — that's fine.
+        assert is_lib is True
+
 
 # ── Go ────────────────────────────────────────────────────────────────────
 
