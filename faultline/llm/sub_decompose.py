@@ -49,6 +49,14 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_THRESHOLD = 200
+# When ``threshold`` would skip the entire repo because every
+# feature is well under 200 files (small single-package repos like
+# faultline-self), scale the threshold down. Formula:
+# ``min(threshold, max(MIN_DYNAMIC, total_source_files / 4))``.
+# A 60-file repo gets a 15-file threshold, so a 47-file ``Analysis
+# Core`` feature still gets sub-decomposed. A 2000-file monorepo
+# stays at 200, unchanged.
+MIN_DYNAMIC_THRESHOLD = 15
 DEFAULT_MAX_SUB_FEATURES = 6
 # Smaller than Sprint 1's per-package 15 — the input is one cohesive
 # feature, not a whole package, so fewer probing reads suffice.
@@ -281,11 +289,31 @@ def sub_decompose_oversized(
     if not result or not result.features:
         return result
 
+    # Dynamic threshold: scale down on small repos so Sprint 3
+    # actually fires. A 60-file repo's largest feature might be
+    # 15-30 files — well under the 200 default. Without scaling,
+    # sub-decompose never runs on small projects (faultline-self
+    # showed this clearly: 7 features, biggest 47 files, 0 splits).
+    total_source_files = sum(
+        len(files) for name, files in result.features.items()
+        if name not in _PROTECTED_NAMES
+    )
+    effective_threshold = min(
+        threshold,
+        max(MIN_DYNAMIC_THRESHOLD, total_source_files // 4),
+    )
+    if effective_threshold < threshold:
+        logger.info(
+            "sub_decompose: small repo (%d source files) — using "
+            "dynamic threshold %d (default %d)",
+            total_source_files, effective_threshold, threshold,
+        )
+
     # Snapshot keys so we can mutate ``result.features`` while iterating.
     candidates = [
         (name, list(files))
         for name, files in result.features.items()
-        if name not in _PROTECTED_NAMES and len(files) > threshold
+        if name not in _PROTECTED_NAMES and len(files) > effective_threshold
     ]
     if not candidates:
         return result
@@ -297,7 +325,8 @@ def sub_decompose_oversized(
         return result
 
     logger.info(
-        "sub_decompose: %d feature(s) over threshold=%d", len(candidates), threshold,
+        "sub_decompose: %d feature(s) over threshold=%d",
+        len(candidates), effective_threshold,
     )
 
     for name, files in candidates:

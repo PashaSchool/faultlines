@@ -264,7 +264,10 @@ def _result(features: dict, descriptions: dict | None = None,
 
 class TestSubDecomposeOversized:
     def test_skips_when_no_features_oversized(self, tmp_path):
-        result = _result({"small": [f"{i}.ts" for i in range(50)]})
+        # Tiny repo (10 files) — under MIN_DYNAMIC_THRESHOLD=15
+        # floor → no LLM call. Dynamic threshold doesn't drop below
+        # the floor on micro-repos.
+        result = _result({"small": [f"{i}.ts" for i in range(10)]})
         client = FakeClient([])
         out = sub_decompose_oversized(
             result, threshold=200, repo_root=tmp_path, client=client,
@@ -373,3 +376,79 @@ class TestSubDecomposeOversized:
 
     def test_max_subfeatures_default_6(self):
         assert DEFAULT_MAX_SUB_FEATURES == 6
+
+    def test_dynamic_threshold_fires_on_small_repo(self, tmp_path):
+        # Real scenario: faultline-self had 7 features, biggest 47
+        # files. Total source ~120. Default threshold 200 never
+        # fires. Dynamic min(200, max(15, 120/4=30)) = 30 →
+        # the 47-file feature now triggers a split.
+        files = [f"f{i}.ts" for i in range(47)]
+        # Add small siblings to reach 120 total source files
+        result = _result({
+            "big-feature": files,
+            "siblings1": [f"a{i}.ts" for i in range(35)],
+            "siblings2": [f"b{i}.ts" for i in range(38)],
+        })
+        a = files[:25]
+        b = files[25:]
+        import json
+        client = FakeClient([_resp(json.dumps({
+            "features": [
+                {"name": "alpha", "paths": a, "description": "A"},
+                {"name": "beta",  "paths": b, "description": "B"},
+            ]
+        }))])
+        # Pass default threshold=200 — dynamic logic should still
+        # downgrade it to 30 and split the 47-file big-feature.
+        out = sub_decompose_oversized(
+            result, threshold=200, repo_root=tmp_path, client=client,
+        )
+        assert "big-feature" not in out.features
+        assert "big-feature/alpha" in out.features
+        assert "big-feature/beta" in out.features
+
+    def test_dynamic_threshold_respects_min_floor(self, tmp_path):
+        # Tiny repo (20 source files total). Dynamic threshold
+        # would be max(15, 20/4=5) = 15, NOT 5 — the floor
+        # prevents micro-splits on trivial repos.
+        result = _result({
+            "small-feature": [f"f{i}.ts" for i in range(10)],
+            "tiny": [f"g{i}.ts" for i in range(10)],
+        })
+        client = FakeClient([])  # no calls expected
+        out = sub_decompose_oversized(
+            result, threshold=200, repo_root=tmp_path, client=client,
+        )
+        # No feature exceeds the 15-floor → no LLM calls → all
+        # features survive intact
+        assert client.messages.calls == []
+        assert "small-feature" in out.features
+        assert "tiny" in out.features
+
+    def test_dynamic_threshold_does_not_lower_default_on_big_repo(self, tmp_path):
+        # 2000-file repo: dynamic would be 500, but min(200, 500)
+        # = 200. Default behaviour preserved.
+        files = [f"f{i}.ts" for i in range(2000)]
+        # Single 250-file feature — over default 200, stays
+        # eligible.
+        big_feat = files[:250]
+        rest = files[250:]
+        result = _result({
+            "big": big_feat,
+            "other": rest,
+        })
+        a = big_feat[:120]
+        b = big_feat[120:]
+        import json
+        client = FakeClient([_resp(json.dumps({
+            "features": [
+                {"name": "alpha", "paths": a, "description": "A"},
+                {"name": "beta",  "paths": b, "description": "B"},
+            ]
+        }))])
+        out = sub_decompose_oversized(
+            result, threshold=200, repo_root=tmp_path, client=client,
+        )
+        # 250-file feature should still split (over 200 default)
+        assert "big" not in out.features
+        assert "big/alpha" in out.features

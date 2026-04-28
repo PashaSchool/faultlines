@@ -46,6 +46,10 @@ _PATH_PATTERNS: tuple[tuple[Layer, re.Pattern], ...] = (
     ("schema", re.compile(r"(?:^|/)drizzle\.(?:config|schema)\.")),
     ("schema", re.compile(r"(?:^|/)models/.*\.py$")),  # SQLAlchemy
     ("schema", re.compile(r"(?:^|/)models\.py$")),       # Django flat-app style
+    # Python data-model conventions
+    ("schema", re.compile(r"(?:^|/)schemas?/.*\.py$")),
+    ("schema", re.compile(r"(?:^|/)types\.py$")),         # Pydantic types module
+    ("schema", re.compile(r"(?:^|/)entities/.*\.py$")),   # SQLAlchemy entities
 
     # ── API server (route handlers, procedures) ───────────────────
     # Next.js app router route handlers
@@ -69,6 +73,16 @@ _PATH_PATTERNS: tuple[tuple[Layer, re.Pattern], ...] = (
     ("api-server", re.compile(r"(?:^|/)views/.*\.py$")),  # Django views/
     ("api-server", re.compile(r"(?:^|/)views\.py$")),      # Django flat views.py
     ("api-server", re.compile(r"(?:^|/)urls\.py$")),       # Django urls.py
+    # Python CLI entry points — Click/Typer/argparse apps
+    ("api-server", re.compile(r"(?:^|/)cli\.py$")),
+    ("api-server", re.compile(r"(?:^|/)cli/.+\.py$")),
+    ("api-server", re.compile(r"(?:^|/)__main__\.py$")),
+    ("api-server", re.compile(r"(?:^|/)cmd/.+\.(?:py|go|rs)$")),
+    ("api-server", re.compile(r"(?:^|/)main\.(?:py|go|rs)$")),
+    # FastAPI / Starlette / Flask app modules
+    ("api-server", re.compile(r"(?:^|/)app\.py$")),
+    ("api-server", re.compile(r"(?:^|/)server\.py$")),
+    ("api-server", re.compile(r"(?:^|/)api/.+\.py$")),
 
     # ── State (stores, contexts, hooks-as-state) ─────────────────
     ("state", re.compile(r"(?:^|/)stores?/")),
@@ -140,7 +154,18 @@ _CONTENT_API_SERVER = re.compile(
     r"\b(?:app|router|api)\.(?:get|post|put|patch|delete|all|use)\s*\(|"
     r"\bprocedure\.(?:query|mutation|subscription)\s*\(|"
     r"\bprotectedProcedure\.|\bpublicProcedure\.|"
-    r"\b(?:loader|action)\s*=\s*async)",
+    r"\b(?:loader|action)\s*=\s*async|"
+    # Python CLI frameworks — these declare command handlers, the
+    # closest Python analog to a route handler.
+    r"@click\.(?:command|group)\s*\(|"
+    r"@(?:typer_)?app\.command\s*\(|"
+    r"\btyper\.Typer\s*\(|"
+    r"\bclick\.command\s*\(\s*\)|"
+    # FastAPI / APIRouter Python decorators
+    r"@(?:[a-z_]+_)?(?:router|api|app)\.(?:get|post|put|patch|delete)\s*\(|"
+    # Argparse subcommands
+    r"\.add_subparsers\s*\(|"
+    r"\bargparse\.ArgumentParser\s*\()",
 )
 _CONTENT_API_CLIENT = re.compile(
     r"\b(?:useQuery|useMutation|useInfiniteQuery|useSubscription|"
@@ -151,7 +176,14 @@ _CONTENT_SCHEMA = re.compile(
     r"(?:^|\n)\s*model\s+\w+\s*\{|"
     r"@(?:Entity|Schema)\s*\(|"
     r"sequelize\.define\s*\(|"
-    r"class\s+\w+\s*\([^)]*models\.Model[^)]*\)",
+    r"class\s+\w+\s*\([^)]*models\.Model[^)]*\)|"
+    # Pydantic v2 BaseModel
+    r"class\s+\w+\s*\(\s*BaseModel\s*\)|"
+    r"class\s+\w+\s*\([^)]*BaseModel[^)]*\)|"
+    # SQLAlchemy 2 declarative
+    r"\bMapped\s*\[|"
+    r"class\s+\w+\s*\(\s*DeclarativeBase\s*\)|"
+    r"class\s+\w+\s*\(\s*Base\s*\):",
     re.MULTILINE,
 )
 # JSX hint — file returns/renders JSX. Used as a last-ditch UI

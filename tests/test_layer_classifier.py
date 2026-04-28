@@ -91,6 +91,23 @@ class TestPathAPIServer:
     def test_resolvers(self):
         assert classify_path("src/resolvers/userResolver.ts") == "api-server"
 
+    def test_python_cli(self):
+        assert classify_path("faultline/cli.py") == "api-server"
+        assert classify_path("faultline/cli/main.py") == "api-server"
+
+    def test_python_main_module(self):
+        assert classify_path("faultline/__main__.py") == "api-server"
+
+    def test_go_cmd_main(self):
+        assert classify_path("cmd/server/main.go") == "api-server"
+
+    def test_python_app_module(self):
+        assert classify_path("backend/app.py") == "api-server"
+        assert classify_path("server/server.py") == "api-server"
+
+    def test_python_api_subdir(self):
+        assert classify_path("myproject/api/users.py") == "api-server"
+
 
 # ── classify_path: api-client ────────────────────────────────────
 
@@ -150,6 +167,18 @@ class TestPathSchema:
 
     def test_db_schema(self):
         assert classify_path("apps/web/db/schema.ts") == "schema"
+
+    def test_python_schemas_directory(self):
+        assert classify_path("myproject/schemas/user.py") == "schema"
+        assert classify_path("myproject/schema/user.py") == "schema"
+
+    def test_python_types_module(self):
+        # faultline-self has types.py — Pydantic models live there
+        assert classify_path("faultline/models/types.py") == "schema"
+        assert classify_path("project/types.py") == "schema"
+
+    def test_python_entities(self):
+        assert classify_path("backend/entities/user.py") == "schema"
 
 
 # ── classify_path: no match → support ────────────────────────────
@@ -215,6 +244,53 @@ class TestContent:
     def test_typeorm_entity_decorator(self):
         src = "@Entity()\nexport class User {}"
         assert classify_content(src) == "schema"
+
+    def test_pydantic_basemodel(self):
+        src = (
+            "from pydantic import BaseModel\n"
+            "class User(BaseModel):\n    id: int\n    name: str\n"
+        )
+        assert classify_content(src) == "schema"
+
+    def test_sqlalchemy_mapped(self):
+        src = (
+            "from sqlalchemy.orm import Mapped\n"
+            "class User(Base):\n    id: Mapped[int]\n"
+        )
+        assert classify_content(src) == "schema"
+
+    def test_typer_command(self):
+        src = (
+            "import typer\n"
+            "app = typer.Typer()\n"
+            "@app.command()\n"
+            "def hello(name: str): print(f'hi {name}')\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_click_command(self):
+        src = (
+            "import click\n"
+            "@click.command()\n"
+            "def hello():\n    print('hi')\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_argparse(self):
+        src = (
+            "import argparse\n"
+            "parser = argparse.ArgumentParser()\n"
+            "subs = parser.add_subparsers()\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_fastapi_apirouter(self):
+        src = (
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n"
+            "@router.get('/users')\nasync def list_users(): return []\n"
+        )
+        assert classify_content(src) == "api-server"
 
     def test_no_pattern(self):
         assert classify_content("export const x = 1;\n") is None
