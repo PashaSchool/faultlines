@@ -50,6 +50,15 @@ _PATH_PATTERNS: tuple[tuple[Layer, re.Pattern], ...] = (
     ("schema", re.compile(r"(?:^|/)schemas?/.*\.py$")),
     ("schema", re.compile(r"(?:^|/)types\.py$")),         # Pydantic types module
     ("schema", re.compile(r"(?:^|/)entities/.*\.py$")),   # SQLAlchemy entities
+    # Go data layer
+    ("schema", re.compile(r"(?:^|/)internal/(?:db|store|models)/.+\.go$")),
+    ("schema", re.compile(r"(?:^|/)pkg/(?:db|models)/.+\.go$")),
+    ("schema", re.compile(r"_model\.go$")),
+    ("schema", re.compile(r"_repository\.go$")),
+    # Rust data layer
+    ("schema", re.compile(r"(?:^|/)src/(?:db|models?|schema)/.+\.rs$")),
+    ("schema", re.compile(r"(?:^|/)src/schema\.rs$")),  # Diesel
+    ("schema", re.compile(r"(?:^|/)migrations?/.+\.rs$")),
 
     # ── API server (route handlers, procedures) ───────────────────
     # Next.js app router route handlers
@@ -83,6 +92,15 @@ _PATH_PATTERNS: tuple[tuple[Layer, re.Pattern], ...] = (
     ("api-server", re.compile(r"(?:^|/)app\.py$")),
     ("api-server", re.compile(r"(?:^|/)server\.py$")),
     ("api-server", re.compile(r"(?:^|/)api/.+\.py$")),
+    # Go API layer — handlers / routes / middleware
+    ("api-server", re.compile(r"(?:^|/)internal/(?:handlers?|routes?|api|server)/.+\.go$")),
+    ("api-server", re.compile(r"(?:^|/)pkg/(?:handlers?|routes?|api|server)/.+\.go$")),
+    ("api-server", re.compile(r"_handler\.go$")),
+    ("api-server", re.compile(r"_route\.go$")),
+    ("api-server", re.compile(r"(?:^|/)handlers?/.+\.go$")),
+    # Rust web frameworks — actix / axum / rocket / warp
+    ("api-server", re.compile(r"(?:^|/)src/(?:handlers?|routes?|api|controllers?)/.+\.rs$")),
+    ("api-server", re.compile(r"(?:^|/)src/server\.rs$")),
 
     # ── State (stores, contexts, hooks-as-state) ─────────────────
     ("state", re.compile(r"(?:^|/)stores?/")),
@@ -96,6 +114,11 @@ _PATH_PATTERNS: tuple[tuple[Layer, re.Pattern], ...] = (
     ("state", re.compile(r"[A-Za-z]+Slice\.(?:ts|tsx|js|jsx)$")),
     ("state", re.compile(r"[A-Za-z]+Context\.(?:ts|tsx|js|jsx)$")),
     ("state", re.compile(r"[A-Za-z]+Provider\.(?:ts|tsx|js|jsx)$")),
+    # Go in-memory state — services / managers
+    ("state", re.compile(r"(?:^|/)internal/services?/.+\.go$")),
+    ("state", re.compile(r"_service\.go$")),
+    # Rust state — application/services/domain folders
+    ("state", re.compile(r"(?:^|/)src/(?:services?|state|domain)/.+\.rs$")),
 
     # ── API client (data fetching) ────────────────────────────────
     ("api-client", re.compile(r"(?:^|/)trpc/client/")),
@@ -165,7 +188,22 @@ _CONTENT_API_SERVER = re.compile(
     r"@(?:[a-z_]+_)?(?:router|api|app)\.(?:get|post|put|patch|delete)\s*\(|"
     # Argparse subcommands
     r"\.add_subparsers\s*\(|"
-    r"\bargparse\.ArgumentParser\s*\()",
+    r"\bargparse\.ArgumentParser\s*\(|"
+    # Go web frameworks
+    r"\bgin\.(?:Default|New|Engine)\s*\(|"
+    r"\b(?:r|router|mux)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(|"
+    r"\bhttp\.HandleFunc\s*\(|"
+    r"\bchi\.NewRouter\s*\(|"
+    r"\becho\.New\s*\(|"
+    r"\bfiber\.New\s*\(|"
+    r"\b\.HandleFunc\s*\(|"
+    # Rust web frameworks
+    r"\baxum::Router::\s*new\s*\(|"
+    r"\bRouter::new\s*\(\s*\)\s*\.route\s*\(|"
+    r"\bactix_web::App::\s*new\s*\(|"
+    r"#\[(?:get|post|put|patch|delete|route)\s*\(|"
+    r"\brocket::routes!\s*\[|"
+    r"\bwarp::path\s*!\s*\()",
 )
 _CONTENT_API_CLIENT = re.compile(
     r"\b(?:useQuery|useMutation|useInfiniteQuery|useSubscription|"
@@ -183,7 +221,13 @@ _CONTENT_SCHEMA = re.compile(
     # SQLAlchemy 2 declarative
     r"\bMapped\s*\[|"
     r"class\s+\w+\s*\(\s*DeclarativeBase\s*\)|"
-    r"class\s+\w+\s*\(\s*Base\s*\):",
+    r"class\s+\w+\s*\(\s*Base\s*\):|"
+    # Go ORM / DB struct tags
+    r"`(?:gorm|db|sql|json):\"[^\"]+\"`|"
+    r"\bgorm\.Model\b|"
+    r"\bbun\.BaseModel\b|"
+    # Rust ORM derives
+    r"#\[derive\([^)]*(?:sqlx::FromRow|Queryable|Insertable|Selectable)[^)]*\)\]",
     re.MULTILINE,
 )
 # JSX hint — file returns/renders JSX. Used as a last-ditch UI

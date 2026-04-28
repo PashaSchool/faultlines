@@ -108,6 +108,25 @@ class TestPathAPIServer:
     def test_python_api_subdir(self):
         assert classify_path("myproject/api/users.py") == "api-server"
 
+    def test_go_handlers_directory(self):
+        assert classify_path("internal/handlers/users.go") == "api-server"
+        assert classify_path("pkg/handlers/users.go") == "api-server"
+        assert classify_path("handlers/users.go") == "api-server"
+
+    def test_go_handler_filename_suffix(self):
+        assert classify_path("user_handler.go") == "api-server"
+        assert classify_path("internal/auth/login_route.go") == "api-server"
+
+    def test_go_routes_directory(self):
+        assert classify_path("internal/routes/main.go") == "api-server"
+
+    def test_rust_handlers_directory(self):
+        assert classify_path("src/handlers/users.rs") == "api-server"
+        assert classify_path("src/routes/users.rs") == "api-server"
+
+    def test_rust_server_module(self):
+        assert classify_path("src/server.rs") == "api-server"
+
 
 # ── classify_path: api-client ────────────────────────────────────
 
@@ -148,6 +167,17 @@ class TestPathState:
     def test_hooks_directory(self):
         assert classify_path("src/hooks/useAuth.ts") == "state"
 
+    def test_go_services_directory(self):
+        assert classify_path("internal/services/billing.go") == "state"
+
+    def test_go_service_filename(self):
+        assert classify_path("billing_service.go") == "state"
+
+    def test_rust_services(self):
+        assert classify_path("src/services/billing.rs") == "state"
+        assert classify_path("src/state/auth.rs") == "state"
+        assert classify_path("src/domain/orders.rs") == "state"
+
 
 # ── classify_path: schema ────────────────────────────────────────
 
@@ -179,6 +209,24 @@ class TestPathSchema:
 
     def test_python_entities(self):
         assert classify_path("backend/entities/user.py") == "schema"
+
+    def test_go_models_directory(self):
+        assert classify_path("internal/models/user.go") == "schema"
+        assert classify_path("pkg/models/order.go") == "schema"
+
+    def test_go_db_directory(self):
+        assert classify_path("internal/db/queries.go") == "schema"
+
+    def test_go_model_filename(self):
+        assert classify_path("user_model.go") == "schema"
+
+    def test_go_repository_filename(self):
+        assert classify_path("user_repository.go") == "schema"
+
+    def test_rust_models(self):
+        assert classify_path("src/models/user.rs") == "schema"
+        assert classify_path("src/db/connection.rs") == "schema"
+        assert classify_path("src/schema.rs") == "schema"  # Diesel
 
 
 # ── classify_path: no match → support ────────────────────────────
@@ -291,6 +339,88 @@ class TestContent:
             "@router.get('/users')\nasync def list_users(): return []\n"
         )
         assert classify_content(src) == "api-server"
+
+    def test_gin_router(self):
+        src = (
+            "package main\n"
+            "import \"github.com/gin-gonic/gin\"\n"
+            "func main() {\n"
+            "  r := gin.Default()\n"
+            "  r.GET(\"/users\", listUsers)\n"
+            "  r.POST(\"/users\", createUser)\n"
+            "}\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_chi_router(self):
+        src = (
+            "package handler\n"
+            "import \"github.com/go-chi/chi/v5\"\n"
+            "func New() *chi.Mux {\n"
+            "  r := chi.NewRouter()\n"
+            "  return r\n"
+            "}\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_net_http_handlefunc(self):
+        src = (
+            "package main\n"
+            "import \"net/http\"\n"
+            "func main() {\n"
+            "  http.HandleFunc(\"/users\", listUsers)\n"
+            "}\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_axum_router(self):
+        src = (
+            "use axum::Router;\n"
+            "fn app() -> Router {\n"
+            "  Router::new().route(\"/users\", get(list_users))\n"
+            "}\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_actix_app(self):
+        src = (
+            "use actix_web::{App, HttpServer, web};\n"
+            "fn main() {\n"
+            "  let app = actix_web::App::new();\n"
+            "}\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_rocket_route_attr(self):
+        src = (
+            "#[get(\"/users\")]\n"
+            "fn list_users() -> Json<Vec<User>> { ... }\n"
+        )
+        assert classify_content(src) == "api-server"
+
+    def test_go_gorm_model(self):
+        src = (
+            "package models\n"
+            "type User struct {\n"
+            "  ID uint `gorm:\"primaryKey\"`\n"
+            "  Name string `json:\"name\" gorm:\"not null\"`\n"
+            "}\n"
+        )
+        assert classify_content(src) == "schema"
+
+    def test_rust_sqlx_fromrow(self):
+        src = (
+            "#[derive(Debug, sqlx::FromRow)]\n"
+            "pub struct User { pub id: i32, pub name: String }\n"
+        )
+        assert classify_content(src) == "schema"
+
+    def test_rust_diesel_queryable(self):
+        src = (
+            "#[derive(Queryable, Insertable)]\n"
+            "pub struct User { pub id: i32 }\n"
+        )
+        assert classify_content(src) == "schema"
 
     def test_no_pattern(self):
         assert classify_content("export const x = 1;\n") is None
