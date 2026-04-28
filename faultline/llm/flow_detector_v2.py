@@ -31,7 +31,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .dedup import _PROTECTED_NAMES
-from .tool_use_scan import DEFAULT_MODEL, tool_use_scan
+from .tool_use_scan import tool_use_scan
+
+
+# Flow detection is a classification task — find the user-flow that
+# starts at a given route handler. Sonnet's reasoning isn't required;
+# Haiku 4.5 handles tool calls + JSON output reliably and costs ~5x
+# less per token. Switching saved ~$2/scan on documenso (Sprint 4
+# was the bulk of the LLM bill).
+DEFAULT_MODEL = "claude-haiku-4-5"
 
 if TYPE_CHECKING:  # pragma: no cover
     from .cost import CostTracker

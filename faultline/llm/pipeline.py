@@ -274,12 +274,25 @@ def run(
     # unchanged.
     if critique:
         from faultline.llm.critique import critique_and_refine
+        # Lock canonical names from the user's .faultline.yaml so
+        # critique can't rename them — keeps scan output stable
+        # across runs.
+        locked: frozenset[str] = frozenset()
+        if repo_root is not None:
+            try:
+                from faultline.analyzer.repo_config import load_repo_config
+                _cfg = load_repo_config(repo_root)
+                if _cfg is not None:
+                    locked = frozenset(r.canonical for r in _cfg.features)
+            except Exception:  # noqa: BLE001 — opportunistic
+                pass
         result = critique_and_refine(
             result,
             repo_root=repo_root,
             api_key=api_key,
             model=model,
             tracker=tracker,
+            locked_names=locked,
         )
 
     # Stage 2: Materialize synthetic features for non-source buckets.

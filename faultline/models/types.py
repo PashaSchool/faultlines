@@ -36,6 +36,7 @@ class FileBlame(BaseModel):
 
 class Flow(BaseModel):
     name: str                  # "checkout-flow", "login-flow"
+    display_name: str | None = None  # Title Case label for UI ("Checkout")
     description: str | None = None
     # Sprint 4: tool-augmented flow detection grounds every flow in
     # a real route handler / event subscription. These fields point
@@ -79,6 +80,10 @@ class SymbolAttribution(BaseModel):
 
 class Feature(BaseModel):
     name: str
+    # Title Case display label derived from ``name`` (or set explicitly
+    # by post-processing). Dashboards and reports show this; ``name``
+    # stays a stable slug used for dedup / config lookups / IDs.
+    display_name: str | None = None
     description: str | None = None  # LLM-generated semantic description
     paths: list[str]          # directories/files belonging to this feature
     authors: list[str]        # contributors

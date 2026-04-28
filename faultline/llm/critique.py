@@ -31,7 +31,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .dedup import _PROTECTED_NAMES, _parse_merges_payload  # reuse parser
-from .tool_use_scan import DEFAULT_MODEL, tool_use_scan
+from .tool_use_scan import tool_use_scan
+
+
+# Critique is a classification + rename task; Sonnet's reasoning isn't
+# required. Haiku 4.5 handles the small JSON outputs and the cheap
+# rename calls fine and cuts ~$0.60-1.00 per scan.
+DEFAULT_MODEL = "claude-haiku-4-5"
 
 if TYPE_CHECKING:  # pragma: no cover
     from .cost import CostTracker
@@ -332,12 +338,20 @@ def critique_and_refine(
     max_items: int = DEFAULT_MAX_ITEMS,
     tool_budget: int = DEFAULT_TOOL_BUDGET,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    locked_names: frozenset[str] | None = None,
 ) -> "DeepScanResult":
     """Run a critique pass and apply tool-augmented renames.
 
     Mutates ``result`` in place AND returns it. Each rejected
     proposal is logged so the user can see what the engine
     considered but did not change.
+
+    ``locked_names`` is the optional set of feature names that
+    critique must NOT rename — typically the canonical names from
+    the user's ``.faultline.yaml``. Locking these stabilizes scan
+    output across runs (Sprint 5 critique is otherwise non-
+    deterministic and would re-rename the same feature differently
+    on consecutive scans).
     """
     if not result or not result.features:
         return result
@@ -345,6 +359,18 @@ def critique_and_refine(
     summaries = _build_critique_summaries(result)
     if not summaries:
         return result
+
+    locked: frozenset[str] = locked_names or frozenset()
+    if locked:
+        # Strip locked features from the input so the model never
+        # sees them as candidates for renaming.
+        summaries = [s for s in summaries if s.get("name") not in locked]
+        if not summaries:
+            logger.info(
+                "critique: every feature is locked by user config — "
+                "no-op",
+            )
+            return result
 
     if client is None:
         import os

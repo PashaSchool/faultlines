@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from faultline.cli import (
     _inject_new_pipeline_flows,
+    _populate_display_names,
     _split_entry_trail,
 )
 from faultline.models.types import Feature, Flow, FeatureMap
@@ -237,3 +238,37 @@ class TestInjectFlows:
         # Sprint 4 doesn't do per-flow file attribution — paths
         # inherit the whole feature's set so the Pydantic contract holds.
         assert sorted(flow.paths) == ["a.ts", "b.ts", "c.ts"]
+
+
+class TestPopulateDisplayNames:
+    def test_humanizes_feature_and_flow_names(self):
+        fl = Flow(
+            name="create-organisation",
+            paths=["x.ts"], authors=[], total_commits=0, bug_fixes=0,
+            bug_fix_ratio=0.0,
+            last_modified=datetime.now(tz=timezone.utc),
+            health_score=80.0,
+        )
+        fm = _map([_f("user-authentication", flows=[fl])])
+        _populate_display_names(fm)
+        assert fm.features[0].display_name == "User Authentication"
+        assert fm.features[0].flows[0].display_name == "Create Organisation"
+
+    def test_preserves_existing_display_name(self):
+        fm = _map([_f("billing")])
+        fm.features[0].display_name = "Stripe Billing & Subscriptions"
+        _populate_display_names(fm)
+        assert fm.features[0].display_name == "Stripe Billing & Subscriptions"
+
+    def test_handles_subdecomposed_slug(self):
+        fm = _map([_f("team-and-org/team-lifecycle")])
+        _populate_display_names(fm)
+        assert fm.features[0].display_name == "Team Lifecycle"
+
+    def test_idempotent(self):
+        fm = _map([_f("billing-and-subscriptions")])
+        _populate_display_names(fm)
+        first = fm.features[0].display_name
+        _populate_display_names(fm)
+        assert fm.features[0].display_name == first
+        assert first == "Billing & Subscriptions"

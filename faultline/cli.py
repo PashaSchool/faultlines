@@ -733,6 +733,13 @@ def analyze(
                 commits,
             )
 
+        # 6a.6: Populate Title Case display_name on every feature +
+        # flow. Internal slug-form name stays untouched — it's the
+        # stable ID used for dedup / config / API lookups. Dashboards
+        # and reports prefer display_name when present so a buyer
+        # sees "Authentication" rather than "user-authentication".
+        _populate_display_names(feature_map)
+
         # 6b. Read coverage data (if available)
         from faultline.analyzer.coverage import read_coverage
         coverage_data = read_coverage(str(repo.working_tree_dir), coverage_path=coverage)
@@ -938,6 +945,24 @@ def _inject_new_pipeline_descriptions(
                 ):
                     feat.description = desc
                     break
+
+
+def _populate_display_names(feature_map) -> None:
+    """Set ``display_name`` on every Feature + Flow from the slug name.
+
+    Skips features that already have a ``display_name`` set (the LLM
+    or a future override might supply one explicitly). Idempotent —
+    safe to re-run on the same map.
+    """
+    from faultline.analyzer.humanize import (
+        humanize_feature_name, humanize_flow_name,
+    )
+    for feat in feature_map.features:
+        if not feat.display_name:
+            feat.display_name = humanize_feature_name(feat.name)
+        for fl in feat.flows or []:
+            if not fl.display_name:
+                fl.display_name = humanize_flow_name(fl.name)
 
 
 _ENTRY_TRAIL_RE = re.compile(r"\s*\(entry:\s*([^:)]+):(\d+)\)\s*$")

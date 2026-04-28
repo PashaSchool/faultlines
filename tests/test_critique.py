@@ -327,3 +327,45 @@ class TestCritiqueAndRefine:
     def test_default_constants(self):
         assert DEFAULT_MAX_ITEMS == 5
         assert DEFAULT_TOOL_BUDGET == 5
+
+    def test_locked_names_skip_critique(self, tmp_path):
+        # Locked features get stripped from the critique input so
+        # the model never sees them as candidates for renaming.
+        r = DeepScanResult(features={
+            "billing": ["a.ts"],
+            "lib/x": ["b.ts"],
+        })
+        client = FakeClient([_resp('{"weak": []}')])
+        out = critique_and_refine(
+            r, repo_root=tmp_path, client=client,
+            locked_names=frozenset({"billing"}),
+        )
+        assert "billing" in out.features
+        user_msg = client.messages.calls[0]["messages"][0]["content"]
+        assert "billing" not in user_msg
+        assert "lib/x" in user_msg
+
+    def test_locked_names_partial_filter(self, tmp_path):
+        r = DeepScanResult(features={
+            "billing": ["a.ts"],
+            "lib/platform": ["b.ts"],
+        })
+        client = FakeClient([_resp('{"weak": []}')])
+        critique_and_refine(
+            r, repo_root=tmp_path, client=client,
+            locked_names=frozenset({"billing"}),
+        )
+        user_msg = client.messages.calls[0]["messages"][0]["content"]
+        assert "billing" not in user_msg
+        assert "lib/platform" in user_msg
+
+    def test_all_locked_short_circuits(self, tmp_path):
+        r = DeepScanResult(features={"billing": ["a.ts"], "auth": ["b.ts"]})
+        client = FakeClient([])  # no calls expected
+        out = critique_and_refine(
+            r, repo_root=tmp_path, client=client,
+            locked_names=frozenset({"billing", "auth"}),
+        )
+        assert "billing" in out.features
+        assert "auth" in out.features
+        assert client.messages.calls == []
