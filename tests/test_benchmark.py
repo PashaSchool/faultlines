@@ -161,6 +161,62 @@ class TestFeatureRecall:
     def test_empty_expected(self):
         assert feature_recall([], {"x": []}) == 0.0
 
+    def test_prefix_match_subdecomposition(self):
+        # Sprint 3 splits document-signing into 3 sub-features —
+        # the canonical name should still count as found.
+        e = [ExpectedFeature(name="document-signing")]
+        detected = {
+            "document-signing/recipient-signing-experience": [],
+            "document-signing/pdf-sealing-certification": [],
+        }
+        assert feature_recall(e, detected) == 1.0
+
+    def test_token_set_word_order(self):
+        # team-and-organisation-management ≡ organisation-and-team-management
+        e = [ExpectedFeature(name="organisation-and-team-management")]
+        assert feature_recall(e, {"team-and-organisation-management": []}) == 1.0
+
+    def test_token_set_stop_words(self):
+        # "user-authentication" (expected) vs "authentication" (detected)
+        e = [ExpectedFeature(name="user-authentication")]
+        assert feature_recall(e, {"authentication": []}) == 1.0
+
+    def test_no_match_genuinely_different(self):
+        # Different domain words → not a match
+        e = [ExpectedFeature(name="billing")]
+        assert feature_recall(e, {"signing": []}) == 0.0
+
+    def test_token_subset_two_meaningful_tokens(self):
+        # expected tokens after stop-word filter: {envelope, document}
+        # detected last-segment tokens: {envelope, document, billing}
+        # subset matches (≥2 expected tokens)
+        e = [ExpectedFeature(name="envelope-document-management")]
+        assert feature_recall(e, {"envelope-document-billing": []}) == 1.0
+
+    def test_subset_single_token_expected_does_NOT_match(self):
+        # Expected "email" has only one non-stop token; subset
+        # match could falsely include any feature containing "email".
+        # User must add an explicit alias instead.
+        e = [ExpectedFeature(name="email")]
+        assert feature_recall(e, {"organisation-email-domains": []}) == 0.0
+
+    def test_subset_one_way_detected_coarser_does_not_match(self):
+        # User expected user-payment-billing (tokens: {payment, billing}),
+        # engine produced just "billing" (tokens: {billing}).
+        # Detected ⊊ expected — should NOT match (recall would
+        # over-credit a partial detection).
+        e = [ExpectedFeature(name="user-payment-billing")]
+        assert feature_recall(e, {"billing": []}) == 0.0
+
+    def test_subset_two_token_envelope_management(self):
+        # When the user gives a 2+-token canonical, subset works.
+        # expected: envelope-management → tokens {envelope}
+        # Hmm — "management" is a stop word, leaving {envelope}.
+        # That's only 1 token, so this should NOT match by subset.
+        # User would need an explicit alias for envelope-management.
+        e = [ExpectedFeature(name="envelope-management")]
+        assert feature_recall(e, {"document-and-envelopes": []}) == 0.0
+
 
 # ── Metrics: feature precision ───────────────────────────────────────
 

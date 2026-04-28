@@ -8,6 +8,7 @@ family and 0.0 for the rate (no generics if you have no features).
 
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 from .loader import ExpectedAttribution, ExpectedFeature, ExpectedFlow
@@ -32,6 +33,71 @@ def _flow_normalize(name: str) -> str:
     return _normalize(name).replace("-", " ").replace("_", " ")
 
 
+# Tokens we consider "stop words" — they don't contribute meaning to
+# token-set comparison so two names that only differ by these still
+# match.
+_NAME_STOP_TOKENS: frozenset[str] = frozenset({
+    "and", "or", "of", "the", "a", "an",
+    "management", "service", "module", "system", "feature",
+    "user",  # "user-authentication" vs "authentication"
+})
+
+
+def _name_tokens(name: str) -> frozenset[str]:
+    """Token-set view of a feature name.
+
+    Splits on ``/``, ``-``, ``_`` and drops stop tokens. Used by
+    :func:`_names_equivalent` to consider names like
+    ``team-and-organisation-management`` and
+    ``organisation-and-team-management`` equivalent (word-order swap)
+    and ``user-authentication`` ≈ ``authentication`` (stop word).
+    """
+    raw = re.split(r"[/\-_]+", _normalize(name))
+    return frozenset(t for t in raw if t and t not in _NAME_STOP_TOKENS)
+
+
+def _name_matches(expected: str, detected: str) -> bool:
+    """True when ``detected`` represents the same domain as ``expected``.
+
+    Four rules, applied in order:
+
+      1. Exact name match (``billing`` == ``billing``).
+      2. Prefix match: detected starts with ``expected + "/"`` or
+         vice versa. Lets ``document-signing`` count as found when
+         the engine produces ``document-signing/recipient-signing``
+         (Sprint 3 sub-decomposition adds granularity below the
+         canonical name).
+      3. Token-set equality after stop-word filter. Handles word-
+         order swaps ("team-and-organisation-management" ≡
+         "organisation-and-team-management") and pure-stop-word
+         differences ("user-authentication" ≡ "authentication").
+      4. Token subset (after stop-word filter): expected ⊆ detected,
+         and expected has ≥2 meaningful tokens. Lets
+         ``envelope-management`` match ``envelope-document-management``
+         — detected is MORE specific than the canonical, which is fine
+         for recall. The 2-token floor prevents single-token expected
+         names from matching unrelated detected names that happen to
+         contain that one token (e.g. expected ``email`` would
+         otherwise match unrelated ``ee/organisation-email-domains``).
+         For single-token canonicals the user must add explicit
+         aliases in ``.faultline.yaml``.
+    """
+    e = _normalize(expected)
+    d = _normalize(detected)
+    if e == d:
+        return True
+    if d.startswith(e + "/") or e.startswith(d + "/"):
+        return True
+    et, dt = _name_tokens(expected), _name_tokens(detected)
+    if not et or not dt:
+        return False
+    if et == dt:
+        return True
+    if len(et) >= 2 and et.issubset(dt):
+        return True
+    return False
+
+
 def _detected_names(detected: dict | Iterable[str]) -> set[str]:
     """Extract feature names from either a feature_map dict or any
     iterable of names."""
@@ -47,8 +113,11 @@ def feature_recall(
     expected: list[ExpectedFeature],
     detected: dict | Iterable[str],
 ) -> float:
-    """Fraction of expected features whose name OR an alias appears in
-    ``detected``.
+    """Fraction of expected features matched by some detected feature.
+
+    Match rules (see :func:`_name_matches`): exact, prefix
+    (``document-signing`` matches ``document-signing/X`` from
+    sub-decomposition), or token-set equality after stop-word filter.
 
     >>> from faultline.benchmark.loader import ExpectedFeature
     >>> e = [ExpectedFeature(name="auth", aliases=("api/auth",)),
@@ -57,14 +126,19 @@ def feature_recall(
     0.5
     >>> feature_recall(e, {"api/auth": [], "billing": []})
     1.0
+    >>> feature_recall(e, {"auth/sign-in": [], "billing": []})  # prefix
+    1.0
     """
     if not expected:
         return 0.0
-    have = _detected_names(detected)
+    have_names = (
+        list(detected.keys()) if isinstance(detected, dict)
+        else list(detected)
+    )
     matched = 0
     for feat in expected:
         for n in feat.all_names:
-            if _normalize(n) in have:
+            if any(_name_matches(n, d) for d in have_names):
                 matched += 1
                 break
     return matched / len(expected)
@@ -81,27 +155,31 @@ def feature_precision(
 ) -> float:
     """Fraction of detected features that map to some expected feature.
 
-    Phantom features — detected names that match nothing in the
-    ground truth — drag this down. Synthetic buckets in ``excluded``
-    are skipped from both numerator and denominator.
+    Match rules from :func:`_name_matches` apply. Synthetic buckets in
+    ``excluded`` are skipped from both numerator and denominator.
 
     >>> from faultline.benchmark.loader import ExpectedFeature
     >>> e = [ExpectedFeature(name="auth")]
     >>> feature_precision(e, {"auth": [], "phantom": []})
     0.5
     """
-    have = _detected_names(detected)
+    have_raw = (
+        list(detected.keys()) if isinstance(detected, dict)
+        else list(detected)
+    )
     excluded_norm = {_normalize(x) for x in excluded}
-    have = have - excluded_norm
+    have = [n for n in have_raw if _normalize(n) not in excluded_norm]
     if not have:
         return 0.0
 
-    expected_lookup: set[str] = set()
+    expected_names: list[str] = []
     for feat in expected:
-        for n in feat.all_names:
-            expected_lookup.add(_normalize(n))
+        expected_names.extend(feat.all_names)
 
-    matched = sum(1 for n in have if n in expected_lookup)
+    matched = sum(
+        1 for d in have
+        if any(_name_matches(e, d) for e in expected_names)
+    )
     return matched / len(have)
 
 
