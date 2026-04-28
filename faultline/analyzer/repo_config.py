@@ -76,6 +76,16 @@ _CONFIG_FILENAMES: tuple[str, ...] = (
 )
 
 
+# Synthetic buckets — never auto-locked, never aliased away.
+# Inlined here (rather than imported from llm.dedup) so this
+# module stays free of an analyzer → llm dependency.
+_PROTECTED_NAMES: frozenset[str] = frozenset({
+    "documentation",
+    "shared-infra",
+    "examples",
+})
+
+
 # ── Dataclasses ──────────────────────────────────────────────────────
 
 
@@ -104,16 +114,36 @@ class RepoConfig:
     Every field defaults to empty so a partially-populated config is
     still useful. ``source_path`` records where the config was loaded
     from, for log lines.
+
+    ``auto_aliases`` is engine-managed (Improvement #4): after each
+    successful scan we write the names of stable detected features
+    into a separate top-level ``auto_aliases:`` section. Subsequent
+    runs lock those names against Sprint 5 critique renaming so the
+    same feature keeps the same label scan-to-scan.
     """
 
     features: list[FeatureRule] = field(default_factory=list)
     skip_features: list[str] = field(default_factory=list)
     force_merges: list[ForcedMerge] = field(default_factory=list)
+    auto_aliases: list[FeatureRule] = field(default_factory=list)
     source_path: str = ""
 
     @property
     def is_empty(self) -> bool:
-        return not (self.features or self.skip_features or self.force_merges)
+        return not (
+            self.features or self.skip_features
+            or self.force_merges or self.auto_aliases
+        )
+
+    def all_canonical_names(self) -> frozenset[str]:
+        """Names from BOTH user-managed features and auto_aliases.
+
+        Used by the pipeline to lock Sprint 5 critique against
+        renaming any stable name.
+        """
+        names: set[str] = {r.canonical for r in self.features}
+        names.update(r.canonical for r in self.auto_aliases)
+        return frozenset(names)
 
 
 # ── Loader ───────────────────────────────────────────────────────────
@@ -155,16 +185,19 @@ def load_repo_config(repo_root: Path | str) -> RepoConfig | None:
     features = _parse_features(data.get("features"), path)
     skip = _parse_skip(data.get("skip_features"), path)
     forced = _parse_force_merges(data.get("force_merges"), path)
+    auto = _parse_features(data.get("auto_aliases"), path)
 
     cfg = RepoConfig(
         features=features,
         skip_features=skip,
         force_merges=forced,
+        auto_aliases=auto,
         source_path=str(path),
     )
     logger.info(
-        "repo_config: loaded %s — %d feature rules, %d skips, %d force-merges",
-        path, len(features), len(skip), len(forced),
+        "repo_config: loaded %s — %d user features, %d auto_aliases, "
+        "%d skips, %d force-merges",
+        path, len(features), len(auto), len(skip), len(forced),
     )
     return cfg
 
@@ -242,6 +275,162 @@ def _parse_force_merges(raw, source: Path) -> list[ForcedMerge]:
     return out
 
 
+# ── Auto-save (Improvement #4) ────────────────────────────────────────
+
+
+# Features below this size are too noisy to lock in — they're often
+# small ancillary helpers that legitimately get renamed across runs
+# as the engine learns more about the codebase. Locking them too
+# eagerly would freeze in early-iteration mistakes.
+_AUTO_LOCK_MIN_FILES = 10
+
+
+def auto_save_canonicals(
+    repo_root: Path | str,
+    detected: dict[str, list[str]],
+    descriptions: dict[str, str] | None = None,
+    *,
+    write_if_missing: bool = False,
+) -> int:
+    """Write stable canonical feature names back to ``.faultline.yaml``.
+
+    For each detected feature that is:
+      - not synthetic (``documentation`` / ``shared-infra`` /
+        ``examples``)
+      - at or above :data:`_AUTO_LOCK_MIN_FILES` files
+      - not already declared in user-managed ``features:``
+
+    ...append a stub under ``auto_aliases:`` with the engine's
+    description. Subsequent scans see the name in
+    :meth:`RepoConfig.all_canonical_names`, lock it against Sprint
+    5 critique, and the label sticks.
+
+    Behaviour:
+      - When the repo already has a ``.faultline.yaml`` the function
+        merges into it (preserving all user content). Only the
+        ``auto_aliases:`` block is rewritten.
+      - When no config exists, no file is created unless
+        ``write_if_missing=True`` (default False — we don't want to
+        litter every scanned repo with a config file the user didn't
+        ask for).
+      - Returns the count of NEW canonicals written. ``0`` is the
+        common steady-state once the repo has stabilised.
+
+    Failure modes (write errors, malformed existing YAML) are logged
+    and the function returns ``0`` — auto-save is best-effort, never
+    blocks the scan.
+    """
+    if not detected:
+        return 0
+
+    repo_root = Path(repo_root)
+    config_path = find_repo_config(repo_root)
+    if config_path is None:
+        if not write_if_missing:
+            return 0
+        config_path = repo_root / ".faultline.yaml"
+
+    descriptions = descriptions or {}
+
+    # Load existing content so we preserve user edits.
+    try:
+        existing = (
+            yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if config_path.exists() else None
+        ) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning(
+            "repo_config: cannot read %s for auto-save (%s) — skipping",
+            config_path, exc,
+        )
+        return 0
+    if not isinstance(existing, dict):
+        logger.warning(
+            "repo_config: %s top-level is not a mapping — skipping auto-save",
+            config_path,
+        )
+        return 0
+
+    # Names the user has explicitly declared — never auto-write
+    # over them.
+    user_names: set[str] = set()
+    raw_user = existing.get("features") or {}
+    if isinstance(raw_user, dict):
+        user_names.update(str(k).strip() for k in raw_user.keys())
+
+    # Existing auto_aliases — preserve descriptions where the engine
+    # didn't supply a fresh one this run.
+    raw_auto = existing.get("auto_aliases") or {}
+    prev_auto: dict[str, dict] = {}
+    if isinstance(raw_auto, dict):
+        prev_auto = {
+            str(k).strip(): (v if isinstance(v, dict) else {})
+            for k, v in raw_auto.items()
+        }
+
+    new_auto: dict[str, dict] = {}
+    new_count = 0
+    for name, files in detected.items():
+        if name in _PROTECTED_NAMES:
+            continue
+        if name in user_names:
+            continue
+        if len(files) < _AUTO_LOCK_MIN_FILES:
+            continue
+        prev = prev_auto.get(name) or {}
+        desc = descriptions.get(name) or prev.get("description") or ""
+        entry: dict[str, object] = {}
+        if desc:
+            entry["description"] = desc
+        # Preserve any user-curated variants that crept into this
+        # auto entry on a previous run + manual edit.
+        prev_variants = prev.get("variants")
+        if isinstance(prev_variants, list) and prev_variants:
+            entry["variants"] = list(prev_variants)
+        new_auto[name] = entry
+        if name not in prev_auto:
+            new_count += 1
+
+    # Rebuild the file: keep all user keys verbatim; overwrite only
+    # ``auto_aliases``.
+    output = dict(existing)
+    if new_auto:
+        output["auto_aliases"] = new_auto
+    elif "auto_aliases" in output:
+        del output["auto_aliases"]
+
+    try:
+        text = (
+            "# Faultlines repo config. User-managed sections are "
+            "preserved across\n"
+            "# scans; the ``auto_aliases:`` block at the bottom is "
+            "engine-managed —\n"
+            "# Faultlines rewrites it after each scan to lock canonical "
+            "feature\n"
+            "# names against Sprint 5 critique renaming. Safe to delete "
+            "or move\n"
+            "# entries from auto_aliases up into ``features:`` to take "
+            "ownership.\n\n"
+        )
+        text += yaml.safe_dump(
+            output, sort_keys=False, allow_unicode=True, indent=2,
+        )
+        config_path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "repo_config: cannot write %s for auto-save (%s) — skipping",
+            config_path, exc,
+        )
+        return 0
+
+    logger.info(
+        "repo_config: auto-save wrote %d new canonical(s) to %s "
+        "(total auto_aliases now: %d)",
+        new_count, config_path, len(new_auto),
+    )
+    return new_count
+
+
 # ── Apply ────────────────────────────────────────────────────────────
 
 
@@ -303,7 +492,12 @@ def apply_repo_config(
         )
 
     # ── 2. canonical aliasing ──────────────────────────────────────
-    for rule in config.features:
+    # User-managed ``features`` rules apply first (they may rename
+    # current variants). ``auto_aliases`` follow with the same
+    # apply logic but lower priority — if both define the same
+    # canonical name the user version wins (already deduped at
+    # apply time because the variant is gone after the first pass).
+    for rule in list(config.features) + list(config.auto_aliases):
         for variant in rule.variants:
             if variant not in result.features or variant == rule.canonical:
                 continue

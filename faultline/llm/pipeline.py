@@ -297,14 +297,15 @@ def run(
         from faultline.llm.critique import critique_and_refine
         # Lock canonical names from the user's .faultline.yaml so
         # critique can't rename them — keeps scan output stable
-        # across runs.
+        # across runs. Includes both user-managed ``features:`` and
+        # engine-written ``auto_aliases:`` (Improvement #4).
         locked: frozenset[str] = frozenset()
         if repo_root is not None:
             try:
                 from faultline.analyzer.repo_config import load_repo_config
                 _cfg = load_repo_config(repo_root)
                 if _cfg is not None:
-                    locked = frozenset(r.canonical for r in _cfg.features)
+                    locked = _cfg.all_canonical_names()
             except Exception:  # noqa: BLE001 — opportunistic
                 pass
         result = critique_and_refine(
@@ -347,6 +348,20 @@ def run(
     # one feature. Anything missing is a bug we want to surface, not a
     # silent fallback into shared-infra.
     _validate_source_coverage(source_files, result.features)
+
+    # Stage 4 (Improvement #4): Auto-save discovered canonical names
+    # back to ``.faultline.yaml`` so subsequent runs lock them
+    # against Sprint 5 critique renaming. Only runs on repos that
+    # already have a config file (we don't litter every scan target
+    # with a new yaml file). Best-effort — never blocks the scan.
+    if repo_root is not None:
+        try:
+            from faultline.analyzer.repo_config import auto_save_canonicals
+            auto_save_canonicals(
+                repo_root, result.features, result.descriptions,
+            )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("pipeline: auto-save canonicals failed (%s)", exc)
 
     return result
 

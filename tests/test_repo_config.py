@@ -10,6 +10,7 @@ from faultline.analyzer.repo_config import (
     ForcedMerge,
     RepoConfig,
     apply_repo_config,
+    auto_save_canonicals,
     find_repo_config,
     load_repo_config,
 )
@@ -278,3 +279,144 @@ class TestApply:
         assert "design-system" in out.features
         assert sorted(out.features["design-system"]) == ["p.ts", "u.ts"]
         assert "tsconfig" not in out.features
+
+
+# ── auto_save_canonicals ──────────────────────────────────────────────
+
+
+class TestAutoSave:
+    def test_no_config_no_op_by_default(self, tmp_path: Path):
+        # No .faultline.yaml in repo root → don't create one
+        n = auto_save_canonicals(
+            tmp_path,
+            {"auth": [f"a{i}.ts" for i in range(20)]},
+            {"auth": "User auth"},
+        )
+        assert n == 0
+        assert not (tmp_path / ".faultline.yaml").exists()
+
+    def test_no_config_creates_when_write_if_missing(self, tmp_path: Path):
+        n = auto_save_canonicals(
+            tmp_path,
+            {"auth": [f"a{i}.ts" for i in range(20)]},
+            {"auth": "User auth"},
+            write_if_missing=True,
+        )
+        assert n == 1
+        assert (tmp_path / ".faultline.yaml").exists()
+
+    def test_writes_canonical_with_description(self, tmp_path: Path):
+        (tmp_path / ".faultline.yaml").write_text("features: {}\n", encoding="utf-8")
+        n = auto_save_canonicals(
+            tmp_path,
+            {"auth": [f"a{i}.ts" for i in range(20)]},
+            {"auth": "User authentication."},
+        )
+        assert n == 1
+        text = (tmp_path / ".faultline.yaml").read_text(encoding="utf-8")
+        assert "auto_aliases:" in text
+        assert "auth:" in text
+        assert "User authentication" in text
+
+    def test_skips_protected(self, tmp_path: Path):
+        (tmp_path / ".faultline.yaml").write_text("features: {}\n", encoding="utf-8")
+        auto_save_canonicals(
+            tmp_path,
+            {
+                "documentation": [f"d{i}.md" for i in range(50)],
+                "shared-infra": [f"i{i}.ts" for i in range(40)],
+                "examples": [f"e{i}.ts" for i in range(30)],
+                "auth": [f"a{i}.ts" for i in range(20)],
+            },
+        )
+        text = (tmp_path / ".faultline.yaml").read_text(encoding="utf-8")
+        assert "auth" in text
+        assert "documentation" not in text.split("auto_aliases:")[1]
+        assert "shared-infra" not in text.split("auto_aliases:")[1]
+
+    def test_skips_below_min_files(self, tmp_path: Path):
+        # 9 files < _AUTO_LOCK_MIN_FILES=10 → skip
+        (tmp_path / ".faultline.yaml").write_text("features: {}\n", encoding="utf-8")
+        n = auto_save_canonicals(
+            tmp_path,
+            {"tiny": [f"t{i}.ts" for i in range(9)]},
+            {"tiny": "small"},
+        )
+        assert n == 0
+
+    def test_skips_user_managed_features(self, tmp_path: Path):
+        # User has explicitly written 'auth' under features:
+        (tmp_path / ".faultline.yaml").write_text(
+            "features:\n  auth:\n    description: my own\n",
+            encoding="utf-8",
+        )
+        n = auto_save_canonicals(
+            tmp_path,
+            {"auth": [f"a{i}.ts" for i in range(20)]},
+            {"auth": "Engine description"},
+        )
+        # Already user-managed → not promoted to auto_aliases
+        assert n == 0
+        text = (tmp_path / ".faultline.yaml").read_text(encoding="utf-8")
+        # User description preserved
+        assert "my own" in text
+
+    def test_preserves_user_features_block(self, tmp_path: Path):
+        (tmp_path / ".faultline.yaml").write_text("""
+features:
+  signing:
+    description: Sacred user content.
+    variants:
+      - lib/signing
+""", encoding="utf-8")
+        auto_save_canonicals(
+            tmp_path,
+            {
+                "signing": [f"s{i}.ts" for i in range(20)],
+                "billing": [f"b{i}.ts" for i in range(15)],
+            },
+        )
+        cfg = load_repo_config(tmp_path)
+        assert any(r.canonical == "signing" for r in cfg.features)
+        assert any(r.canonical == "billing" for r in cfg.auto_aliases)
+
+    def test_idempotent_same_input(self, tmp_path: Path):
+        (tmp_path / ".faultline.yaml").write_text("features: {}\n", encoding="utf-8")
+        detected = {"auth": [f"a{i}.ts" for i in range(20)]}
+        descs = {"auth": "User auth."}
+        first = auto_save_canonicals(tmp_path, detected, descs)
+        second = auto_save_canonicals(tmp_path, detected, descs)
+        # First call writes 1 new entry; second call sees the same name
+        # already in auto_aliases → 0 new
+        assert first == 1
+        assert second == 0
+
+    def test_lock_via_all_canonical_names(self, tmp_path: Path):
+        (tmp_path / ".faultline.yaml").write_text("""
+features:
+  signing:
+    description: Sacred.
+auto_aliases:
+  billing:
+    description: Engine-managed.
+""", encoding="utf-8")
+        cfg = load_repo_config(tmp_path)
+        names = cfg.all_canonical_names()
+        assert "signing" in names
+        assert "billing" in names
+
+    def test_apply_repo_config_uses_auto_aliases(self, tmp_path: Path):
+        # Both user features and auto_aliases participate in alias
+        # rewriting at apply time.
+        (tmp_path / ".faultline.yaml").write_text("""
+auto_aliases:
+  authentication:
+    description: User auth.
+    variants:
+      - api/auth
+""", encoding="utf-8")
+        cfg = load_repo_config(tmp_path)
+        result = DeepScanResult(features={"api/auth": ["x.ts"]})
+        out = apply_repo_config(result, cfg)
+        assert "authentication" in out.features
+        assert "api/auth" not in out.features
