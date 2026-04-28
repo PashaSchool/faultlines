@@ -38,8 +38,16 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .symbol_graph import ImportEdge, SymbolGraph
+from .layer_classifier import classify_files
+from .symbol_graph import ImportEdge, SymbolGraph, build_symbol_graph
 from ..models.types import SymbolRange
+
+
+# Carrier dict the orchestrator stashes onto DeepScanResult so the
+# downstream CLI injector can attach FlowParticipant entries to
+# Pydantic Flow objects without breaking the existing schema.
+# Shape: ``{feature_name: {flow_name: list[TracedParticipant + layer]}}``.
+TraceMap = dict[str, dict[str, list["TracedParticipant"]]]
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +71,10 @@ class TracedParticipant:
     # (``import './x'``) — usually polyfills or registration code,
     # included for completeness but visually distinct.
     side_effect_only: bool = False
+    # Layer assigned by the classifier (Sprint 7 Day 3). Filled in
+    # by ``trace_flow_callgraph`` after the BFS completes; the
+    # raw ``trace_flow`` walker leaves it ``None``.
+    layer: str | None = None
 
 
 @dataclass
@@ -210,3 +222,106 @@ def _resolve_target_symbols(
         if r.name == edge.target_symbol
     ]
     return matches
+
+
+# ── Top-level orchestrator ──────────────────────────────────────
+
+
+def trace_flow_callgraph(
+    result,  # DeepScanResult — typed loosely to avoid circular import
+    repo_root: str | "Path",
+    *,
+    depth: int = DEFAULT_DEPTH,
+    max_participants: int = DEFAULT_MAX_PARTICIPANTS,
+) -> TraceMap:
+    """Build symbol graph once + trace every flow in ``result``.
+
+    Returns a :data:`TraceMap` keyed by ``feature_name → flow_name →
+    list[TracedParticipant]``. Each TracedParticipant has its
+    ``layer`` field populated by the layer classifier.
+
+    The function does NOT mutate ``result`` — the CLI side
+    (:func:`cli._inject_new_pipeline_flows`) reads the TraceMap and
+    attaches ``FlowParticipant`` objects to ``Flow.participants``.
+
+    Empty when:
+      - ``result.flows`` is empty (nothing to trace)
+      - no flows have an ``entry_point_file`` recorded in
+        ``result.flow_descriptions`` (Sprint 4 not run)
+      - the symbol graph is empty (no TS/JS sources)
+
+    Pure local analysis — no LLM calls.
+    """
+    from pathlib import Path as _Path
+    import re as _re
+
+    if not result or not result.features or not result.flows:
+        return {}
+
+    # Aggregate every source file from every feature so we can build
+    # the symbol graph once (much cheaper than per-feature builds).
+    all_files: set[str] = set()
+    for files in result.features.values():
+        all_files.update(files)
+    if not all_files:
+        return {}
+
+    logger.info(
+        "trace_flow_callgraph: building symbol graph over %d files",
+        len(all_files),
+    )
+    graph = build_symbol_graph(repo_root, sorted(all_files))
+
+    # Sprint 4 stashes "(entry: file:line)" inside flow_descriptions.
+    # Same regex as cli._split_entry_trail.
+    entry_re = _re.compile(r"\(entry:\s*([^:)]+):(\d+)\)")
+
+    out: TraceMap = {}
+    layer_files_seen: set[str] = set()
+    layer_cache: dict[str, str] = {}
+
+    for feature_name, flow_names in result.flows.items():
+        if not flow_names:
+            continue
+        per_flow_descs = result.flow_descriptions.get(feature_name, {}) or {}
+        out_for_feature: dict[str, list[TracedParticipant]] = {}
+        for flow_name in flow_names:
+            desc = per_flow_descs.get(flow_name) or ""
+            m = entry_re.search(desc)
+            if not m:
+                continue
+            entry_file = m.group(1).strip()
+            try:
+                entry_line = int(m.group(2))
+            except ValueError:
+                entry_line = 0
+            traced = trace_flow(
+                graph, entry_file, entry_line,
+                depth=depth, max_participants=max_participants,
+            )
+            # Classify any new files we saw.
+            new_files = [
+                p.file for p in traced.participants
+                if p.file not in layer_files_seen
+            ]
+            if new_files:
+                layer_files_seen.update(new_files)
+                layer_cache.update(
+                    classify_files(repo_root, new_files, read_content=True)
+                )
+            for p in traced.participants:
+                p.layer = layer_cache.get(p.file, "support")
+            out_for_feature[flow_name] = list(traced.participants)
+        if out_for_feature:
+            out[feature_name] = out_for_feature
+
+    n_flows = sum(len(v) for v in out.values())
+    n_participants = sum(
+        len(p) for v in out.values() for p in v.values()
+    )
+    logger.info(
+        "trace_flow_callgraph: traced %d flow(s) across %d feature(s); "
+        "%d participants total (%d unique files classified)",
+        n_flows, len(out), n_participants, len(layer_files_seen),
+    )
+    return out

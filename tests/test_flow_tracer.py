@@ -253,3 +253,87 @@ class TestTraceFlowFixtureRepo:
         assert "c.ts" in files
         assert "b.ts" in files
         assert "a.ts" not in files
+
+
+# ── trace_flow_callgraph orchestrator ────────────────────────────
+
+
+class TestTraceFlowCallgraph:
+    def _build_documenso_like_repo(self, tmp_path: Path) -> None:
+        # API server route handler
+        _write(tmp_path, "apps/web/app/api/users/route.ts",
+               "export async function POST() { return new Response(); }\n")
+        # State store
+        _write(tmp_path, "apps/web/stores/user-store.ts",
+               "import { create } from 'zustand';\n"
+               "export const useUserStore = create(() => ({}));\n")
+        # UI component
+        _write(tmp_path, "apps/web/components/UserForm.tsx",
+               "import { useUserStore } from '../stores/user-store';\n"
+               "export default function UserForm() {\n"
+               "  return useUserStore();\n"
+               "}\n")
+        # Schema
+        _write(tmp_path, "packages/prisma/schema.prisma",
+               "model User { id Int @id }\n")
+        # Entry point — a Remix route component
+        _write(tmp_path, "apps/web/app/users/page.tsx",
+               "import UserForm from '../../components/UserForm';\n"
+               "export default function Page() {\n"
+               "  return <UserForm />;\n"
+               "}\n")
+
+    def test_orchestrator_traces_all_flows(self, tmp_path: Path):
+        from faultline.analyzer.flow_tracer import trace_flow_callgraph
+        from faultline.llm.sonnet_scanner import DeepScanResult
+
+        self._build_documenso_like_repo(tmp_path)
+
+        result = DeepScanResult(
+            features={"users": [
+                "apps/web/app/users/page.tsx",
+                "apps/web/components/UserForm.tsx",
+                "apps/web/stores/user-store.ts",
+                "apps/web/app/api/users/route.ts",
+                "packages/prisma/schema.prisma",
+            ]},
+            flows={"users": ["create-user"]},
+            flow_descriptions={"users": {
+                "create-user": "User submits form. (entry: apps/web/app/users/page.tsx:2)",
+            }},
+        )
+
+        trace = trace_flow_callgraph(result, tmp_path, depth=3)
+        assert "users" in trace
+        assert "create-user" in trace["users"]
+        participants = trace["users"]["create-user"]
+        files = {p.file for p in participants}
+
+        # Entry + reachable callees
+        assert "apps/web/app/users/page.tsx" in files
+        assert "apps/web/components/UserForm.tsx" in files
+        assert "apps/web/stores/user-store.ts" in files
+
+        # Layers populated by the classifier
+        layers = {p.layer for p in participants}
+        assert "ui" in layers
+        assert "state" in layers
+
+    def test_no_flows_returns_empty(self, tmp_path: Path):
+        from faultline.analyzer.flow_tracer import trace_flow_callgraph
+        from faultline.llm.sonnet_scanner import DeepScanResult
+        result = DeepScanResult(features={"x": []}, flows={})
+        assert trace_flow_callgraph(result, tmp_path) == {}
+
+    def test_skips_flows_without_entry_trail(self, tmp_path: Path):
+        from faultline.analyzer.flow_tracer import trace_flow_callgraph
+        from faultline.llm.sonnet_scanner import DeepScanResult
+        _write(tmp_path, "x.ts", "export const X = 1;\n")
+        result = DeepScanResult(
+            features={"f": ["x.ts"]},
+            flows={"f": ["bare-flow"]},
+            flow_descriptions={"f": {"bare-flow": "no entry suffix"}},
+        )
+        trace = trace_flow_callgraph(result, tmp_path)
+        # Flow without (entry: ...) trail not included
+        assert "f" not in trace

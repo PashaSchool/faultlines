@@ -149,6 +149,18 @@ def analyze(
         ),
         is_flag=True,
     ),
+    trace_flows: bool = typer.Option(
+        False,
+        "--trace-flows",
+        help=(
+            "Sprint 7 (experimental): walk the import graph from each "
+            "Sprint 4 flow's entry point and enumerate every UI / state / "
+            "API / schema file that participates, with per-symbol line "
+            "ranges. Pure local analysis (no LLM calls). Requires "
+            "--tool-flows."
+        ),
+        is_flag=True,
+    ),
     legacy: bool = typer.Option(
         False,
         "--legacy",
@@ -371,6 +383,7 @@ def analyze(
                     sub_decompose=sub_decompose,
                     tool_flows=tool_flows,
                     critique=critique,
+                    trace_flows=trace_flows,
                 )
             except Exception as exc:  # pragma: no cover - surfacing guidance
                 console.print(
@@ -731,6 +744,9 @@ def analyze(
                 _new_pipeline_result.flows,
                 _new_pipeline_result.flow_descriptions,
                 commits,
+                flow_participants=getattr(
+                    _new_pipeline_result, "flow_participants", {},
+                ),
             )
 
         # 6a.6: Populate Title Case display_name on every feature +
@@ -996,6 +1012,7 @@ def _inject_new_pipeline_flows(
     flows: dict[str, list[str]],
     flow_descriptions: dict[str, dict[str, str]],
     commits,
+    flow_participants: dict | None = None,
 ) -> None:
     """Attach Sprint 4 (tool-augmented) flow names + descriptions to the
     feature_map.
@@ -1008,6 +1025,11 @@ def _inject_new_pipeline_flows(
     downstream consumers (dashboard, MCP) read structured data
     instead of regexing it back out.
 
+    When ``flow_participants`` is provided (Sprint 7 trace_flows
+    output), each Flow also gets a populated ``participants`` list
+    with file / layer / symbol-range info for the entire call-graph
+    reach.
+
     Per feature we build one ``Flow`` Pydantic per Sprint 4 name.
     The flow's ``paths`` inherit the parent feature's path list
     (Sprint 4 does flow-level naming, not file-level attribution),
@@ -1015,18 +1037,30 @@ def _inject_new_pipeline_flows(
     """
     if not flows:
         return
-    from faultline.models.types import Flow
+    from faultline.models.types import Flow, FlowParticipant
+
+    fp_map = flow_participants or {}
 
     for feat in feature_map.features:
         new_flow_names = flows.get(feat.name) or []
         if not new_flow_names:
             continue
         per_flow_descs = flow_descriptions.get(feat.name) or {}
+        per_flow_traces = fp_map.get(feat.name) or {}
         new_flows: list[Flow] = []
         for name in new_flow_names:
             clean_desc, entry_file, entry_line = _split_entry_trail(
                 per_flow_descs.get(name),
             )
+            participants: list[FlowParticipant] = []
+            for tp in per_flow_traces.get(name, []) or []:
+                participants.append(FlowParticipant(
+                    path=tp.file,
+                    layer=tp.layer or "support",
+                    depth=tp.depth,
+                    side_effect_only=tp.side_effect_only,
+                    symbols=list(tp.symbols),
+                ))
             new_flows.append(Flow(
                 name=name,
                 description=clean_desc,
@@ -1039,6 +1073,7 @@ def _inject_new_pipeline_flows(
                 bug_fix_ratio=feat.bug_fix_ratio,
                 last_modified=feat.last_modified,
                 health_score=feat.health_score,
+                participants=participants,
             ))
         feat.flows = new_flows
 

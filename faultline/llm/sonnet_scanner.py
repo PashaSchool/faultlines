@@ -123,6 +123,13 @@ class DeepScanResult:
     descriptions: dict[str, str] = field(default_factory=dict)
     flow_descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
     cost_summary: dict[str, Any] | None = None
+    # Sprint 7: per-feature, per-flow list of call-graph participants.
+    # Shape: ``{feature_name: {flow_name: list[TracedParticipant]}}``.
+    # Populated by ``analyzer.flow_tracer.trace_flow_callgraph`` when
+    # ``--trace-flows`` is set; left empty otherwise.
+    flow_participants: dict[str, dict[str, list[Any]]] = field(
+        default_factory=dict,
+    )
 
     # ── dict read shims (legacy compat) ─────────────────────────────────
     def __getitem__(self, key: str) -> list[str]:

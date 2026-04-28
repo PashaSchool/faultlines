@@ -38,6 +38,7 @@ class Flow(BaseModel):
     name: str                  # "checkout-flow", "login-flow"
     display_name: str | None = None  # Title Case label for UI ("Checkout")
     description: str | None = None
+    participants: list["FlowParticipant"] = []
     # Sprint 4: tool-augmented flow detection grounds every flow in
     # a real route handler / event subscription. These fields point
     # at the file (and optional line) where that flow's user journey
@@ -67,6 +68,23 @@ class SymbolRange(BaseModel):
     start_line: int        # 1-indexed, inclusive
     end_line: int          # 1-indexed, inclusive
     kind: str = "const"    # "const", "function", "class", "type", "enum", "reexport"
+
+
+class FlowParticipant(BaseModel):
+    """One file that participates in a flow's call-graph reach.
+
+    Sprint 7 ``trace_flow_callgraph`` populates these from the
+    symbol-import graph BFS + layer classifier. ``layer`` is one of
+    ``ui`` / ``state`` / ``api-client`` / ``api-server`` /
+    ``schema`` / ``support``.
+    """
+
+    path: str
+    layer: str = "support"
+    depth: int = 0
+    side_effect_only: bool = False
+    symbols: list[SymbolRange] = []
+    role: str | None = None  # optional human-readable role hint
 
 
 class SymbolAttribution(BaseModel):

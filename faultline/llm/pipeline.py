@@ -73,6 +73,7 @@ def run(
     sub_decompose: bool = False,
     tool_flows: bool = False,
     critique: bool = False,
+    trace_flows: bool = False,
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -272,6 +273,26 @@ def run(
     # renamed when the proposal is materially better than the
     # original. Opportunistic: any error returns the previous result
     # unchanged.
+    # Stage 1.95 (Sprint 7): Call-graph flow trace. For every flow
+    # detected by Sprint 4, BFS through the import graph from the
+    # entry-point file:line and record every UI / state / API /
+    # schema file that participates. No LLM calls — pure local
+    # static analysis. Result is stashed on
+    # ``result.flow_participants`` for the CLI injector to attach
+    # to ``Flow.participants`` Pydantic objects downstream.
+    if trace_flows and repo_root is not None:
+        try:
+            from faultline.analyzer.flow_tracer import trace_flow_callgraph
+            result.flow_participants = trace_flow_callgraph(
+                result, repo_root,
+            )
+            logger.info(
+                "pipeline: trace_flows produced %d feature trace(s)",
+                len(result.flow_participants),
+            )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("pipeline: trace_flows failed (%s) — skipping", exc)
+
     if critique:
         from faultline.llm.critique import critique_and_refine
         # Lock canonical names from the user's .faultline.yaml so
