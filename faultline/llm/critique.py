@@ -420,6 +420,22 @@ def critique_and_refine(
         logger.info("critique: 0 weak items proposed — no-op")
         return result
 
+    # Deterministic ordering — biggest features first (file_count
+    # desc), then alphabetical within ties. Without this the model's
+    # output order leaks into rename-application order, and identical
+    # scans on consecutive runs produce different final feature
+    # names. The biggest features are highest-impact targets, so
+    # processing them first also matches user intuition.
+    sizes: dict[str, int] = {
+        name: len(paths) for name, paths in result.features.items()
+    }
+    weak_items.sort(
+        key=lambda it: (
+            -sizes.get(it.get("name", ""), 0),
+            it.get("name", ""),
+        ),
+    )
+
     for i, item in enumerate(weak_items):
         logger.info(
             "critique: weak[%d] kind=%s name=%r reason=%r",

@@ -369,3 +369,37 @@ class TestCritiqueAndRefine:
         assert "billing" in out.features
         assert "auth" in out.features
         assert client.messages.calls == []
+
+    def test_weak_items_processed_in_size_order(self, tmp_path):
+        # Critique flags 3 features. We expect dispatch in file-count
+        # desc order, then alphabetical within ties.
+        (tmp_path / "x.ts").write_text("x", encoding="utf-8")
+        r = DeepScanResult(features={
+            "small": ["a.ts"],
+            "biggest-feature": [f"f{i}.ts" for i in range(50)],
+            "medium-thing": [f"m{i}.ts" for i in range(20)],
+        })
+        # Model returns in random order to simulate non-determinism.
+        weak_response = _resp('{"weak": ['
+            '{"kind": "feature", "name": "small", "reason": "x"},'
+            '{"kind": "feature", "name": "biggest-feature", "reason": "x"},'
+            '{"kind": "feature", "name": "medium-thing", "reason": "x"}'
+        ']}')
+        # Each rename returns empty new_name → rejected, but log
+        # order shows the dispatch order.
+        decline = _resp('{"new_name": ""}')
+        client = FakeClient([weak_response, decline, decline, decline])
+        critique_and_refine(
+            r, repo_root=tmp_path, client=client,
+        )
+        # Inspect the order rename calls were dispatched in: each
+        # tool_use_scan call sends the feature name in the user
+        # prompt. Calls 1, 2, 3 (after the critique pass at index 0).
+        call_names = [
+            c["messages"][0]["content"].split("\n")[0].replace("Package: ", "")
+            for c in client.messages.calls[1:]
+            if "Package:" in c["messages"][0]["content"]
+        ]
+        # biggest-feature first (50 files), medium-thing next (20),
+        # small last (1)
+        assert call_names == ["biggest-feature", "medium-thing", "small"]
