@@ -65,6 +65,27 @@ _RE_SIDE_EFFECT_IMPORT = re.compile(
     r"^\s*import\s+['\"]([^'\"]+)['\"]",
     re.MULTILINE,
 )
+# Re-export shapes:
+#   ``export { X, Y } from './m'``
+#   ``export { X as Z } from './m'``
+#   ``export * from './m'``
+#   ``export * as ns from './m'``
+# All count as "this file imports those symbols and re-exposes them"
+# for BFS purposes — flows that touch the re-exporting barrel reach
+# through to the original definitions.
+_RE_NAMED_REEXPORT = re.compile(
+    r"^\s*export\s*\{([^}]+)\}\s*from\s*['\"]([^'\"]+)['\"]",
+    re.MULTILINE,
+)
+_RE_STAR_REEXPORT = re.compile(
+    r"^\s*export\s*\*(?:\s+as\s+\w+)?\s+from\s*['\"]([^'\"]+)['\"]",
+    re.MULTILINE,
+)
+# Dynamic imports: ``const X = await import('./y')`` or
+# ``import('./y').then(...)``.
+_RE_DYNAMIC_IMPORT = re.compile(
+    r"\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
+)
 from .import_graph import (
     _resolve_import,
     detect_monorepo_packages,
@@ -220,6 +241,30 @@ def build_symbol_graph(
                 if original:
                     per_module.setdefault(module, set()).add(original)
         for m in _RE_SIDE_EFFECT_IMPORT.finditer(source):
+            module = m.group(1)
+            if module.startswith(".") or module.startswith("@/") or module.startswith("~/"):
+                per_module.setdefault(module, set()).add("@import")
+        # Named re-exports — pass each symbol through to BFS.
+        for m in _RE_NAMED_REEXPORT.finditer(source):
+            names_str = m.group(1)
+            module = m.group(2)
+            if not (module.startswith(".") or module.startswith("@/") or module.startswith("~/")):
+                continue
+            for tok in names_str.split(","):
+                parts = tok.strip().split(" as ")
+                original = parts[0].strip()
+                if original:
+                    per_module.setdefault(module, set()).add(original)
+        # Star re-exports — record as namespace ("*") so BFS pulls
+        # every export of the target.
+        for m in _RE_STAR_REEXPORT.finditer(source):
+            module = m.group(1)
+            if module.startswith(".") or module.startswith("@/") or module.startswith("~/"):
+                per_module.setdefault(module, set()).add("*")
+        # Dynamic imports — treated as side-effect for BFS purposes
+        # since we can't statically know which symbol is destructured
+        # off the resolved module.
+        for m in _RE_DYNAMIC_IMPORT.finditer(source):
             module = m.group(1)
             if module.startswith(".") or module.startswith("@/") or module.startswith("~/"):
                 per_module.setdefault(module, set()).add("@import")

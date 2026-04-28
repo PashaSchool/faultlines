@@ -136,6 +136,64 @@ class TestBuildGraph:
             for e in edges
         )
 
+    def test_named_reexport(self, tmp_path: Path):
+        # Barrel pattern: index.ts re-exports symbols from sibling
+        # files. A consumer of the barrel should reach the original.
+        _write(tmp_path, "auth/login.ts", "export const login = () => {};\n")
+        _write(tmp_path, "auth/index.ts", "export { login } from './login';\n")
+        _write(tmp_path, "consumer.ts",
+               "import { login } from './auth';\nexport const x = login;\n")
+        g = build_symbol_graph(tmp_path, [
+            "auth/login.ts", "auth/index.ts", "consumer.ts",
+        ])
+        # auth/index.ts should have an edge to auth/login.ts via the
+        # re-export.
+        edges = g.forward.get("auth/index.ts") or []
+        assert any(
+            e.target_file == "auth/login.ts" and e.target_symbol == "login"
+            for e in edges
+        )
+
+    def test_named_reexport_with_alias(self, tmp_path: Path):
+        _write(tmp_path, "a.ts", "export const A = 1;\n")
+        _write(tmp_path, "barrel.ts",
+               "export { A as Renamed } from './a';\n")
+        g = build_symbol_graph(tmp_path, ["a.ts", "barrel.ts"])
+        edges = g.forward.get("barrel.ts") or []
+        # Original name preserved (we record the source symbol)
+        assert any(e.target_symbol == "A" for e in edges)
+
+    def test_star_reexport(self, tmp_path: Path):
+        _write(tmp_path, "lib.ts",
+               "export const X = 1;\nexport const Y = 2;\n")
+        _write(tmp_path, "barrel.ts", "export * from './lib';\n")
+        g = build_symbol_graph(tmp_path, ["lib.ts", "barrel.ts"])
+        edges = g.forward.get("barrel.ts") or []
+        # Star re-export → namespace edge
+        assert any(
+            e.target_file == "lib.ts" and e.target_symbol == "*"
+            for e in edges
+        )
+
+    def test_star_reexport_with_namespace_name(self, tmp_path: Path):
+        _write(tmp_path, "ns.ts", "export const X = 1;\n")
+        _write(tmp_path, "barrel.ts", "export * as theNs from './ns';\n")
+        g = build_symbol_graph(tmp_path, ["ns.ts", "barrel.ts"])
+        edges = g.forward.get("barrel.ts") or []
+        assert any(e.target_file == "ns.ts" for e in edges)
+
+    def test_dynamic_import(self, tmp_path: Path):
+        _write(tmp_path, "lazy.ts", "export default function Lazy() {}\n")
+        _write(tmp_path, "loader.ts",
+               "export const loadLazy = () => import('./lazy');\n")
+        g = build_symbol_graph(tmp_path, ["lazy.ts", "loader.ts"])
+        edges = g.forward.get("loader.ts") or []
+        # Dynamic imports captured as @import (side-effect-style)
+        assert any(
+            e.target_file == "lazy.ts" and e.target_symbol == "@import"
+            for e in edges
+        )
+
     def test_third_party_import_skipped(self, tmp_path: Path):
         _write(tmp_path, "x.ts",
                "import express from 'express';\nexport const app = express();\n")

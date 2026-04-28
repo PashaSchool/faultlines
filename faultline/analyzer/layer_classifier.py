@@ -101,6 +101,16 @@ _PATH_PATTERNS: tuple[tuple[Layer, re.Pattern], ...] = (
     ("ui", re.compile(r"(?:^|/)templates/")),
     ("ui", re.compile(r"(?:^|/)dialogs/")),
     ("ui", re.compile(r"(?:^|/)forms/")),
+    # Design-system / primitives — common in monorepos
+    # (shadcn, radix wrappers, custom DS).
+    ("ui", re.compile(r"(?:^|/)primitives/")),
+    ("ui", re.compile(r"(?:^|/)design-system/")),
+    ("ui", re.compile(r"(?:^|/)ds/")),
+    ("ui", re.compile(r"(?:^|/)kit/.+\.(?:tsx?|jsx?)$")),
+    # Filename-suffix UI conventions
+    ("ui", re.compile(r"[A-Za-z]+(?:Form|Dialog|Modal|Card|Page|Sheet|Drawer|"
+                      r"Panel|Banner|Toast|Tooltip|Menu|Tab|List|Item)"
+                      r"\.(?:tsx?|jsx?)$")),
 
     # Hooks live close to state but most are mixed; classify as
     # state when used as state — content regex catches the rest.

@@ -42,6 +42,29 @@ class TestPathUI:
     def test_dialogs(self):
         assert classify_path("apps/web/components/dialogs/ConfirmDialog.tsx") == "ui"
 
+    def test_primitives_directory(self):
+        # shadcn/radix-style design-system primitives count as UI
+        assert classify_path("packages/ui/primitives/button.tsx") == "ui"
+        assert classify_path("packages/ui/primitives/document/document-card.tsx") == "ui"
+
+    def test_design_system_directory(self):
+        assert classify_path("packages/design-system/Card.tsx") == "ui"
+
+    def test_ds_directory(self):
+        assert classify_path("packages/ds/Button.tsx") == "ui"
+
+    def test_filename_suffix_form(self):
+        assert classify_path("apps/web/UserForm.tsx") == "ui"
+
+    def test_filename_suffix_dialog(self):
+        assert classify_path("apps/web/SignDialog.tsx") == "ui"
+
+    def test_filename_suffix_card(self):
+        assert classify_path("apps/web/UserCard.tsx") == "ui"
+
+    def test_filename_suffix_drawer(self):
+        assert classify_path("apps/web/SettingsDrawer.tsx") == "ui"
+
 
 # ── classify_path: api-server ────────────────────────────────────
 
