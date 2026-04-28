@@ -159,6 +159,8 @@ class SymbolGraph:
 def build_symbol_graph(
     repo_root: str | Path,
     source_files: list[str],
+    *,
+    include_http_edges: bool = True,
 ) -> SymbolGraph:
     """Construct the symbol graph from a repo's source files.
 
@@ -167,6 +169,14 @@ def build_symbol_graph(
         source_files: List of repo-relative file paths to analyse.
             Non-TS/JS files are silently skipped (their imports are
             not part of the BFS).
+        include_http_edges: When True (default), build a route
+            registry via :mod:`faultline.analyzer.url_route_resolver`
+            and add **virtual** ImportEdges from every client file
+            making a fetch / axios / tRPC call to the server file
+            handling the matched route. The synthetic
+            ``target_symbol`` is ``"@http"`` so callers can
+            distinguish HTTP edges from real imports. Set False for
+            a pure static-import view (e.g. unit tests).
 
     Returns:
         Populated :class:`SymbolGraph`. Missing files / parse errors
@@ -297,7 +307,67 @@ def build_symbol_graph(
         len(graph.exports), len(graph.forward),
         sum(len(v) for v in graph.forward.values()),
     )
+
+    # Improvement #6: layer in URL/tRPC HTTP-boundary edges so
+    # Sprint 7 BFS traces from a UI component through the API
+    # client to the actual server handler in one walk.
+    if include_http_edges:
+        try:
+            _add_http_edges(graph, repo_root, source_files)
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning(
+                "symbol_graph: HTTP edge layering failed (%s)", exc,
+            )
+
     return graph
+
+
+def _add_http_edges(
+    graph: SymbolGraph,
+    repo_root: str | Path,
+    source_files: list[str],
+) -> None:
+    """Layer fetch/axios/tRPC client→server edges onto ``graph``.
+
+    For each ``ClientCall`` that resolves to one or more server
+    files, add an :class:`ImportEdge` with the synthetic symbol
+    ``"@http"`` so the BFS walker reaches the server via the
+    runtime call. Edges are added to BOTH ``forward`` and
+    ``reverse`` so the graph is consistent.
+
+    Self-edges (call resolves to its own file — possible on small
+    Next.js apps where the same file declares both server route
+    and client fetch) are skipped to avoid loops.
+    """
+    from .url_route_resolver import build_route_registry, resolve_call_to_routes
+
+    registry = build_route_registry(repo_root, source_files)
+    if not registry.calls or not registry.routes:
+        return
+
+    added = 0
+    for call in registry.calls:
+        targets = resolve_call_to_routes(call, registry)
+        for server_file in targets:
+            if server_file == call.file:
+                continue
+            edge = ImportEdge(target_file=server_file, target_symbol="@http")
+            # Avoid duplicate edges (same call site can appear
+            # multiple times in a file; one edge is enough).
+            forward_list = graph.forward.setdefault(call.file, [])
+            if edge not in forward_list:
+                forward_list.append(edge)
+                graph.reverse.setdefault(server_file, []).append(
+                    ImportEdge(target_file=call.file, target_symbol="@http")
+                )
+                added += 1
+
+    if added:
+        logger.info(
+            "symbol_graph: layered %d HTTP edge(s) "
+            "(client → server via fetch/axios/tRPC)",
+            added,
+        )
 
 
 def _read_safe(repo_root: str, rel_path: str) -> str | None:

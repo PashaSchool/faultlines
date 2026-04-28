@@ -214,7 +214,15 @@ def _resolve_target_symbols(
       target's exports don't list it).
     """
     if edge.target_symbol == "@import":
+        # Side-effect import — we know the file participates but
+        # can't attribute specific symbols.
         return []
+    if edge.target_symbol == "@http":
+        # Improvement #6: HTTP-boundary edge (fetch/axios/tRPC
+        # call → server handler). Return all server exports so
+        # the dashboard can show concrete handler symbols, not
+        # an empty box.
+        return list(graph.exports.get(edge.target_file, []))
     if edge.target_symbol == "*":
         return list(graph.exports.get(edge.target_file, []))
     matches = [

@@ -194,6 +194,70 @@ class TestBuildGraph:
             for e in edges
         )
 
+    def test_http_edge_fetch(self, tmp_path: Path):
+        # Improvement #6: build_symbol_graph layers HTTP edges
+        # (client → server) on top of static imports.
+        _write(tmp_path, "server/api.ts",
+               "app.post('/api/documents', createDocument);\n")
+        _write(tmp_path, "client/upload.tsx",
+               "const r = await fetch('/api/documents', {method: 'POST'});\n")
+        g = build_symbol_graph(tmp_path, [
+            "server/api.ts", "client/upload.tsx",
+        ])
+        edges = g.forward.get("client/upload.tsx") or []
+        assert any(
+            e.target_file == "server/api.ts" and e.target_symbol == "@http"
+            for e in edges
+        )
+        # Reverse map populated too
+        rev = g.reverse.get("server/api.ts") or []
+        assert any(
+            e.target_file == "client/upload.tsx" and e.target_symbol == "@http"
+            for e in rev
+        )
+
+    def test_http_edge_trpc(self, tmp_path: Path):
+        _write(tmp_path, "trpc/router.ts",
+               "export const documentsRouter = router({\n"
+               "  send: protectedProcedure.input(z.any()).mutation(({input}) => {}),\n"
+               "});\n")
+        _write(tmp_path, "ui/SendButton.tsx",
+               "const send = trpc.documents.send.useMutation();\n")
+        g = build_symbol_graph(tmp_path, [
+            "trpc/router.ts", "ui/SendButton.tsx",
+        ])
+        edges = g.forward.get("ui/SendButton.tsx") or []
+        assert any(
+            e.target_file == "trpc/router.ts" and e.target_symbol == "@http"
+            for e in edges
+        )
+
+    def test_http_edges_can_be_disabled(self, tmp_path: Path):
+        _write(tmp_path, "server/api.ts",
+               "app.get('/api/x', h);\n")
+        _write(tmp_path, "client/x.ts",
+               "fetch('/api/x');\n")
+        g = build_symbol_graph(
+            tmp_path, ["server/api.ts", "client/x.ts"],
+            include_http_edges=False,
+        )
+        # Pure static-import view — no HTTP edges
+        for edges in g.forward.values():
+            assert not any(e.target_symbol == "@http" for e in edges)
+
+    def test_http_edge_self_skipped(self, tmp_path: Path):
+        # Single Next.js app router file declaring both server and
+        # consumed by itself — self-edge would create a BFS loop.
+        _write(tmp_path, "app/api/users/route.ts",
+               "export async function GET() {\n"
+               "  await fetch('/api/users');\n"
+               "  return new Response();\n"
+               "}\n")
+        g = build_symbol_graph(tmp_path, ["app/api/users/route.ts"])
+        edges = g.forward.get("app/api/users/route.ts") or []
+        # No self-loop
+        assert all(e.target_file != "app/api/users/route.ts" for e in edges)
+
     def test_third_party_import_skipped(self, tmp_path: Path):
         _write(tmp_path, "x.ts",
                "import express from 'express';\nexport const app = express();\n")
