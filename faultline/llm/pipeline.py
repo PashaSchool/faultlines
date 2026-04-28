@@ -201,6 +201,25 @@ def run(
                 before, after, before - after,
             )
 
+    # Stage 1.6: Apply user-supplied .faultline.yaml from repo root.
+    # Always runs (no flag) so users can opt in by simply dropping a
+    # config file into their repo. Force-merges and canonical
+    # aliasing come from the user; engine stays neutral.
+    if repo_root is not None:
+        try:
+            from faultline.analyzer.repo_config import (
+                apply_repo_config, load_repo_config,
+            )
+            user_cfg = load_repo_config(repo_root)
+            if user_cfg is not None:
+                result = apply_repo_config(result, user_cfg)
+                logger.info(
+                    "pipeline: applied repo config from %s",
+                    user_cfg.source_path,
+                )
+        except ValueError as exc:
+            logger.error("pipeline: repo config error — %s", exc)
+
     # Stage 1.7 (Sprint 3): Sub-decomposition of oversized features.
     # Runs after dedup (so we see the post-merge size) and before
     # synthetic-bucket materialization (so docs / shared-infra never

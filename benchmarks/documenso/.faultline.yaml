@@ -1,0 +1,72 @@
+# Faultlines repo config for documenso.
+#
+# Drop this file into the analyzed repo's root as `.faultline.yaml`
+# and Faultlines will pick up the canonical names + skip rules
+# automatically — no faultline source changes needed per repo.
+#
+# This same file doubles as an alias source for the benchmark
+# harness: a "variant" listed here would otherwise drop recall on
+# the corresponding ground-truth feature.
+
+features:
+  document-signing:
+    description: |
+      Core signing pipeline — upload PDF, place fields, route to
+      recipients, capture signatures, render the audit certificate.
+    variants:
+      - signing
+      - document-signing/document-preparation-dispatch
+      - document-signing/field-placement-signing
+      - lib/document-signing
+      - trpc/document-signing
+      - remix/document-signing
+      - pdf-certificate-signing
+
+  envelope-management:
+    description: Envelope lifecycle — creation, editing, recipients, distribution.
+    variants:
+      - envelope-management/envelope-lifecycle
+      - envelope-management/envelope-editor
+      - lib/envelope-templates
+      - trpc/envelope-management
+      - remix/envelope-editor
+      - document-upload-and-settings
+
+  embedded-signing:
+    description: Embedded signing/authoring SDK for third-party integrators.
+    variants:
+      - remix/embedded-signing-authoring
+      - lib/embedded-signing
+      - trpc/embedded-signing
+
+  design-system:
+    description: Reusable UI primitives, tokens, design components.
+    variants:
+      - ui-primitives
+      - ui/primitive-components
+      - ui/design-system-primitives
+
+  billing-and-subscriptions:
+    description: Stripe billing, subscriptions, invoices, billing portal.
+    variants:
+      - lib/billing-and-subscriptions
+      - ee/stripe-billing
+      - remix/billing-and-subscriptions
+      - trpc/enterprise-billing-and-identity
+
+  webhooks-and-public-api:
+    description: Public REST API, API tokens, outbound webhooks.
+    variants:
+      - lib/webhook-and-public-api
+      - lib/webhooks-and-public-api
+      - public-api
+      - openpage-api
+      - api
+
+skip_features:
+  - tsconfig
+  - tailwind-config
+  - eslint-config
+  - prettier-config
+
+force_merges: []
