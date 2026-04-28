@@ -154,6 +154,15 @@ _CONTENT_SCHEMA = re.compile(
     r"class\s+\w+\s*\([^)]*models\.Model[^)]*\)",
     re.MULTILINE,
 )
+# JSX hint — file returns/renders JSX. Used as a last-ditch UI
+# signal when path patterns and other content patterns don't fire
+# (e.g. an .ipynb-style module or an unusual project layout).
+# We require BOTH a JSX-tag-shaped opener AND a React-ish import
+# to avoid false positives on string templates.
+_CONTENT_JSX_TAG = re.compile(r"</?[A-Z][A-Za-z0-9]*[\s/>]")
+_CONTENT_REACT_IMPORT = re.compile(
+    r"\bfrom\s+['\"]react['\"]|\bfrom\s+['\"]react/[a-z]|\bjsx\b|\bjsxs\b"
+)
 
 
 def classify_content(content: str) -> Layer | None:
@@ -173,6 +182,11 @@ def classify_content(content: str) -> Layer | None:
         return "state"
     if _CONTENT_API_CLIENT.search(content):
         return "api-client"
+    if (
+        _CONTENT_JSX_TAG.search(content)
+        and _CONTENT_REACT_IMPORT.search(content)
+    ):
+        return "ui"
     return None
 
 

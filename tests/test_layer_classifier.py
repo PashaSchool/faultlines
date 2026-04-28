@@ -232,6 +232,30 @@ class TestContent:
         src = "app.get('/x', h);\nconst Ctx = createContext(null);"
         assert classify_content(src) == "api-server"
 
+    def test_jsx_hint_with_react_import(self):
+        src = (
+            "import { useState } from 'react';\n"
+            "export const Card = () => <div><Button>click</Button></div>;\n"
+        )
+        assert classify_content(src) == "ui"
+
+    def test_jsx_without_react_import_no_match(self):
+        # JSX-like syntax but no react import → don't assume UI
+        # (could be a string template builder, e.g. JSX-as-data).
+        src = "const html = '<Component>hi</Component>';\n"
+        assert classify_content(src) is None
+
+    def test_state_pattern_wins_over_jsx_hint(self):
+        # Zustand store with a JSX-rendering helper — state pattern
+        # fires before the JSX hint.
+        src = (
+            "import { create } from 'zustand';\n"
+            "import { useState } from 'react';\n"
+            "export const useStore = create<X>(() => ({}));\n"
+            "export const Wrapper = () => <div>x</div>;\n"
+        )
+        assert classify_content(src) == "state"
+
 
 # ── classify_file (combined) ─────────────────────────────────────
 
