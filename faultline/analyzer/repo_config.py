@@ -434,6 +434,46 @@ def auto_save_canonicals(
 # ── Apply ────────────────────────────────────────────────────────────
 
 
+def _token_match_canonical(
+    variant: str, canonicals: list[str],
+) -> str | None:
+    """Return the canonical name whose tokens match ``variant``, or None.
+
+    Uses ``benchmark.metrics._name_matches`` (bidirectional), which
+    treats ``email`` ≡ ``email-notifications`` and
+    ``prisma-database`` ≡ ``prisma`` while keeping
+    ``user-authentication`` distinct from ``team-management``.
+
+    Sub-features (anything containing ``/``) are excluded — we only
+    rename top-level parents to top-level canonicals here.
+    """
+    if "/" in variant:
+        return None
+    try:
+        from faultline.benchmark.metrics import _name_tokens
+    except Exception:  # noqa: BLE001
+        return None
+    vt = _name_tokens(variant)
+    if not vt:
+        return None
+    for canonical in canonicals:
+        if "/" in canonical:
+            continue
+        ct = _name_tokens(canonical)
+        if not ct:
+            continue
+        # Token-set equal, OR one is a non-empty subset of the other
+        # (covers ``prisma`` ↔ ``prisma-database``, ``email`` ↔
+        # ``email-notifications``, and word-order swaps). Single-
+        # token canonicals are allowed here — user has explicitly
+        # opted in by listing them in ``.faultline.yaml``, so the
+        # over-matching risk that gates ``_name_matches`` doesn't
+        # apply.
+        if vt == ct or vt.issubset(ct) or ct.issubset(vt):
+            return canonical
+    return None
+
+
 def apply_repo_config(
     result: "DeepScanResult",
     config: RepoConfig | None,
@@ -537,6 +577,33 @@ def apply_repo_config(
         # Override description if explicitly set.
         if rule.description and rule.canonical in result.features:
             result.descriptions[rule.canonical] = rule.description
+
+    # ── 2.5. token-set fallback aliasing ───────────────────────────
+    # Catches drift the explicit variant lists miss. If a detected
+    # feature name shares a strong token-set match with a canonical
+    # name (e.g. ``prisma-database`` ↔ ``prisma``,
+    # ``email`` ↔ ``email-notifications``) and the canonical doesn't
+    # already exist in the result, rename to the canonical. This
+    # closes the residual drift coming from the initial Sonnet call,
+    # which doesn't see ``.faultline.yaml`` and invents trivially
+    # different names each run.
+    canonicals = list(config.all_canonical_names())
+    for variant in list(result.features.keys()):
+        if variant in canonicals:
+            continue
+        match = _token_match_canonical(variant, canonicals)
+        if not match or match in result.features:
+            continue
+        result.features[match] = result.features.pop(variant)
+        if variant in result.descriptions:
+            result.descriptions[match] = result.descriptions.pop(variant)
+        if variant in result.flows:
+            result.flows[match] = result.flows.pop(variant)
+        if variant in result.flow_descriptions:
+            result.flow_descriptions[match] = result.flow_descriptions.pop(variant)
+        logger.info(
+            "repo_config: token-match alias %r → %r", variant, match,
+        )
 
     # ── 3. skip_features ───────────────────────────────────────────
     for skip in config.skip_features:
