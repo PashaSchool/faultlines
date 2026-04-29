@@ -578,6 +578,44 @@ def apply_repo_config(
         if rule.description and rule.canonical in result.features:
             result.descriptions[rule.canonical] = rule.description
 
+    # ── 2.4. parent-collapse for canonical top-level names ─────────
+    # ``deep_scan_workspace`` runs a per-package Sonnet call that
+    # may split a package into 2-8 sub-features (``prisma/schema``,
+    # ``prisma/seed``, ``prisma/client``). If the user has the bare
+    # parent (``prisma``) in ``.faultline.yaml`` they've explicitly
+    # said "treat this as one feature" — collapse the children back
+    # into the parent before sub_decompose / critique even see them.
+    canonicals_set = config.all_canonical_names()
+    for canonical in canonicals_set:
+        if "/" in canonical:
+            continue
+        children = [
+            n for n in result.features
+            if n.startswith(canonical + "/")
+        ]
+        if not children:
+            continue
+        merged: dict[str, None] = {
+            f: None for f in result.features.get(canonical, [])
+        }
+        for child in children:
+            for f in result.features.pop(child, []):
+                merged[f] = None
+            result.descriptions.pop(child, None)
+            if child in result.flows:
+                result.flows.setdefault(canonical, []).extend(
+                    result.flows.pop(child),
+                )
+            if child in result.flow_descriptions:
+                target = result.flow_descriptions.setdefault(canonical, {})
+                for fn, desc in result.flow_descriptions.pop(child).items():
+                    target.setdefault(fn, desc)
+        result.features[canonical] = sorted(merged)
+        logger.info(
+            "repo_config: collapsed %d children into %r",
+            len(children), canonical,
+        )
+
     # ── 2.5. token-set fallback aliasing ───────────────────────────
     # Catches drift the explicit variant lists miss. If a detected
     # feature name shares a strong token-set match with a canonical
