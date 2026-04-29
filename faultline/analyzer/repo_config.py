@@ -368,29 +368,8 @@ def auto_save_canonicals(
             for k, v in raw_auto.items()
         }
 
-    # Build append-only auto_aliases: start from the previous file
-    # so canonical names accumulate across runs (a name detected in
-    # run N stays locked for run N+1 even if that run's Sonnet call
-    # invents a slightly different name). Drift across consecutive
-    # scans converges to zero this way: every new name added becomes
-    # the lock for the next scan via the token-match + parent-collapse
-    # passes in ``apply_repo_config``.
     new_auto: dict[str, dict] = {}
     new_count = 0
-    # 1) Preserve every previously-saved auto entry not now claimed
-    #    by user features. Description is kept; variants too.
-    for name, prev in prev_auto.items():
-        if name in user_names:
-            continue
-        entry: dict[str, object] = {}
-        if isinstance(prev, dict):
-            if prev.get("description"):
-                entry["description"] = prev["description"]
-            prev_variants = prev.get("variants")
-            if isinstance(prev_variants, list) and prev_variants:
-                entry["variants"] = list(prev_variants)
-        new_auto[name] = entry
-    # 2) Add fresh names from this run that aren't already locked.
     for name, files in detected.items():
         if name in _PROTECTED_NAMES:
             continue
@@ -398,21 +377,19 @@ def auto_save_canonicals(
             continue
         if len(files) < _AUTO_LOCK_MIN_FILES:
             continue
-        if name in new_auto:
-            # Already preserved — refresh description if we have one.
-            if descriptions.get(name):
-                new_auto[name]["description"] = descriptions[name]
-            continue
         prev = prev_auto.get(name) or {}
         desc = descriptions.get(name) or prev.get("description") or ""
-        entry = {}
+        entry: dict[str, object] = {}
         if desc:
             entry["description"] = desc
+        # Preserve any user-curated variants that crept into this
+        # auto entry on a previous run + manual edit.
         prev_variants = prev.get("variants")
         if isinstance(prev_variants, list) and prev_variants:
             entry["variants"] = list(prev_variants)
         new_auto[name] = entry
-        new_count += 1
+        if name not in prev_auto:
+            new_count += 1
 
     # Rebuild the file: keep all user keys verbatim; overwrite only
     # ``auto_aliases``.
