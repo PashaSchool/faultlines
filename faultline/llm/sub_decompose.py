@@ -224,8 +224,10 @@ def sub_decompose_feature(
         # Bigger budget for huge buckets — the formbricks T2 run hit
         # max_tokens at 16K on a 684-file ``web/design-system`` split,
         # so the JSON came back truncated and the whole sub_decompose
-        # silently failed. Scale max_tokens with file count.
-        scaled_max_tokens = max(16_384, min(64_000, len(files) * 80))
+        # silently failed. Scale max_tokens with file count, capped at
+        # 32K to stay under Anthropic SDK's 10-minute non-streaming
+        # ceiling (T3 with 36K caused "Streaming is required" failure).
+        scaled_max_tokens = max(16_384, min(32_000, len(files) * 60))
         parsed = tool_use_scan(
             package_name=name,
             files=files,
