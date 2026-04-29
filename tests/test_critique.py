@@ -251,12 +251,15 @@ class TestCritiqueAndRefine:
 
     def test_feature_rename_applied_when_better(self, tmp_path: Path):
         (tmp_path / "x.ts").write_text("x", encoding="utf-8")
+        # NOTE: critique now skips features whose name contains a
+        # slash (Sub-features from Sprint 3 are protected). Use a
+        # flat name so the rename path is exercised.
         r = DeepScanResult(
-            features={"lib/platform-infrastructure": ["x.ts"]},
-            descriptions={"lib/platform-infrastructure": "stuff"},
+            features={"platform-infrastructure": ["x.ts"]},
+            descriptions={"platform-infrastructure": "stuff"},
         )
         client = FakeClient([
-            _resp('{"weak": [{"kind": "feature", "name": "lib/platform-infrastructure", "reason": "generic"}]}'),
+            _resp('{"weak": [{"kind": "feature", "name": "platform-infrastructure", "reason": "generic"}]}'),
             # tool_use_scan flow: model returns final text, no tool calls
             _resp(json.dumps({
                 "new_name": "pdf-rendering",
@@ -268,7 +271,7 @@ class TestCritiqueAndRefine:
             r, repo_root=tmp_path, client=client, max_items=5,
         )
         assert "pdf-rendering" in out.features
-        assert "lib/platform-infrastructure" not in out.features
+        assert "platform-infrastructure" not in out.features
         assert out.descriptions["pdf-rendering"] == "PDF rendering for signed docs."
 
     def test_feature_rename_rejected_when_not_better(self, tmp_path: Path):
@@ -303,14 +306,16 @@ class TestCritiqueAndRefine:
         assert "manage-things" not in out.flows["billing"]
 
     def test_no_repo_root_skips_apply(self, tmp_path: Path):
-        r = DeepScanResult(features={"lib/x": ["a.ts"]})
+        # Flat feature name (slashed names are now skipped entirely
+        # by the slash-guard in critique).
+        r = DeepScanResult(features={"infra-shared": ["a.ts"]})
         client = FakeClient([
-            _resp('{"weak": [{"kind": "feature", "name": "lib/x", "reason": "generic"}]}'),
+            _resp('{"weak": [{"kind": "feature", "name": "infra-shared", "reason": "generic"}]}'),
         ])
         out = critique_and_refine(r, repo_root=None, client=client)
         # critique pass ran (1 call) but no rename apply → only 1 call total
         assert len(client.messages.calls) == 1
-        assert "lib/x" in out.features
+        assert "infra-shared" in out.features
 
     def test_tracker_records_critique_call(self, tmp_path: Path):
         from faultline.llm.cost import CostTracker
@@ -325,15 +330,20 @@ class TestCritiqueAndRefine:
         assert s["total_input_tokens"] == 300
 
     def test_default_constants(self):
-        assert DEFAULT_MAX_ITEMS == 5
+        # Stability tuning lowered the cap from 5 → 2 (Step E).
+        # See SPRINT_5_STABILITY analysis in the commit message.
+        assert DEFAULT_MAX_ITEMS == 2
         assert DEFAULT_TOOL_BUDGET == 5
 
     def test_locked_names_skip_critique(self, tmp_path):
         # Locked features get stripped from the critique input so
         # the model never sees them as candidates for renaming.
+        # NOTE: features with slash names are also skipped (Sprint 3
+        # sub-features are protected by the slash-guard) — using
+        # flat names so the test exercises lock specifically.
         r = DeepScanResult(features={
             "billing": ["a.ts"],
-            "lib/x": ["b.ts"],
+            "platform": ["b.ts"],
         })
         client = FakeClient([_resp('{"weak": []}')])
         out = critique_and_refine(
@@ -343,12 +353,12 @@ class TestCritiqueAndRefine:
         assert "billing" in out.features
         user_msg = client.messages.calls[0]["messages"][0]["content"]
         assert "billing" not in user_msg
-        assert "lib/x" in user_msg
+        assert "platform" in user_msg
 
     def test_locked_names_partial_filter(self, tmp_path):
         r = DeepScanResult(features={
             "billing": ["a.ts"],
-            "lib/platform": ["b.ts"],
+            "platform": ["b.ts"],
         })
         client = FakeClient([_resp('{"weak": []}')])
         critique_and_refine(
@@ -357,7 +367,43 @@ class TestCritiqueAndRefine:
         )
         user_msg = client.messages.calls[0]["messages"][0]["content"]
         assert "billing" not in user_msg
-        assert "lib/platform" in user_msg
+        assert "platform" in user_msg
+
+    def test_locked_names_token_match(self, tmp_path):
+        # Stability fix: token-set match in lock. ``auth`` locked
+        # blocks ``user-authentication`` from being flagged in a
+        # later run.
+        r = DeepScanResult(features={
+            "user-authentication": ["a.ts"],
+            "billing-and-subscriptions": ["b.ts"],
+        })
+        client = FakeClient([_resp('{"weak": []}')])
+        critique_and_refine(
+            r, repo_root=tmp_path, client=client,
+            locked_names=frozenset({"authentication"}),
+        )
+        user_msg = client.messages.calls[0]["messages"][0]["content"]
+        # token-set match collapses ``user-authentication`` ≡
+        # ``authentication``  → filtered
+        assert "user-authentication" not in user_msg
+        assert "billing-and-subscriptions" in user_msg
+
+    def test_subfeature_names_skipped_from_critique(self, tmp_path):
+        # Sprint 3 sub-features (path/sub) never get critiqued —
+        # they're already named carefully and re-naming them
+        # destabilizes the trace.
+        r = DeepScanResult(features={
+            "auth/login-handler": ["a.ts"],
+            "billing": ["b.ts"],
+        })
+        client = FakeClient([_resp('{"weak": []}')])
+        critique_and_refine(
+            r, repo_root=tmp_path, client=client,
+        )
+        user_msg = client.messages.calls[0]["messages"][0]["content"]
+        # Slashed name not in critique input
+        assert "auth/login-handler" not in user_msg
+        assert "billing" in user_msg
 
     def test_all_locked_short_circuits(self, tmp_path):
         r = DeepScanResult(features={"billing": ["a.ts"], "auth": ["b.ts"]})
@@ -391,6 +437,9 @@ class TestCritiqueAndRefine:
         client = FakeClient([weak_response, decline, decline, decline])
         critique_and_refine(
             r, repo_root=tmp_path, client=client,
+            # Override the default 2 cap so all 3 items dispatch
+            # — the test is about ORDER, not the new cap.
+            max_items=10,
         )
         # Inspect the order rename calls were dispatched in: each
         # tool_use_scan call sends the feature name in the user

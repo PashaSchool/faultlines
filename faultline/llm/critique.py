@@ -47,7 +47,14 @@ if TYPE_CHECKING:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_MAX_ITEMS = 5
+# Sprint 5 stability tuning (Step E from the 95% plan): cap how
+# many features critique is allowed to flag per run. Stability A/B
+# on documenso showed that with max_items=5 only 5/33 features
+# survived a re-run with the same config — critique was renaming
+# 28 features a run, beating the locked_names mechanism. Dropping
+# to 2 makes drift bounded: at most 2 names change between runs,
+# and locked_names + token-set match catches the rest.
+DEFAULT_MAX_ITEMS = 2
 DEFAULT_MAX_TOKENS = 4_096
 DEFAULT_TOOL_BUDGET = 5  # tighter than Sprint 1+3+4 — focused rename
 
@@ -361,10 +368,29 @@ def critique_and_refine(
         return result
 
     locked: frozenset[str] = locked_names or frozenset()
+
+    # Sprint 5 stability tuning: never critique a sub-feature name
+    # (contains a slash). Sub-decompose (Sprint 3) already named
+    # those carefully and the BFS / dedup logic depends on the
+    # parent/child path shape staying stable.
+    summaries = [s for s in summaries if "/" not in (s.get("name") or "")]
+
     if locked:
-        # Strip locked features from the input so the model never
-        # sees them as candidates for renaming.
-        summaries = [s for s in summaries if s.get("name") not in locked]
+        # Strip locked features from the input. Match BOTH on exact
+        # name AND on token-set equivalence so e.g. ``auth`` locked
+        # also blocks ``user-authentication`` and
+        # ``authentication`` from being flagged in a later run.
+        from faultline.benchmark.metrics import _name_matches
+
+        def _is_locked(name: str) -> bool:
+            if name in locked:
+                return True
+            return any(_name_matches(name, lk) for lk in locked)
+
+        summaries = [
+            s for s in summaries
+            if not _is_locked(s.get("name") or "")
+        ]
         if not summaries:
             logger.info(
                 "critique: every feature is locked by user config — "
