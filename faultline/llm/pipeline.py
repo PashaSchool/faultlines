@@ -238,6 +238,20 @@ def run(
     # leaves the parent intact.
     if sub_decompose:
         from faultline.llm.sub_decompose import sub_decompose_oversized
+        # Stability lock: skip sub-decomposing features whose names
+        # are already canonical in .faultline.yaml (user features
+        # OR auto_aliases). Prevents Sprint 3 from generating fresh
+        # sub-feature names every run on the same parent — the
+        # other half of the drift Sprint 5 fix uncovered.
+        sub_locked: frozenset[str] = frozenset()
+        if repo_root is not None:
+            try:
+                from faultline.analyzer.repo_config import load_repo_config
+                _cfg = load_repo_config(repo_root)
+                if _cfg is not None:
+                    sub_locked = _cfg.all_canonical_names()
+            except Exception:  # noqa: BLE001 — opportunistic
+                pass
         before = len(result.features)
         result = sub_decompose_oversized(
             result,
@@ -245,6 +259,7 @@ def run(
             model=model,
             tracker=tracker,
             repo_root=repo_root,
+            locked_names=sub_locked,
         )
         after = len(result.features)
         if after != before:

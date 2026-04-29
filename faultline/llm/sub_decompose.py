@@ -270,6 +270,7 @@ def sub_decompose_oversized(
     model: str | None = None,
     tracker: "CostTracker | None" = None,
     tool_budget: int = DEFAULT_TOOL_BUDGET,
+    locked_names: frozenset[str] | None = None,
 ) -> "DeepScanResult":
     """Walk ``result.features`` and split anything above ``threshold``.
 
@@ -309,12 +310,33 @@ def sub_decompose_oversized(
             total_source_files, effective_threshold, threshold,
         )
 
+    # Stability lock: when a name is in ``locked_names`` (typically
+    # the user's ``.faultline.yaml`` features + auto_aliases), skip
+    # sub-decomposition entirely. The user (or a previous run)
+    # decided this feature is canonical at this granularity;
+    # re-splitting it on every scan generates churn and destroys
+    # cross-run feature-name stability.
+    locked: frozenset[str] = locked_names or frozenset()
+
     # Snapshot keys so we can mutate ``result.features`` while iterating.
-    candidates = [
-        (name, list(files))
-        for name, files in result.features.items()
-        if name not in _PROTECTED_NAMES and len(files) > effective_threshold
-    ]
+    candidates = []
+    skipped_locked = 0
+    for name, files in result.features.items():
+        if name in _PROTECTED_NAMES:
+            continue
+        if len(files) <= effective_threshold:
+            continue
+        if name in locked:
+            skipped_locked += 1
+            continue
+        candidates.append((name, list(files)))
+
+    if skipped_locked:
+        logger.info(
+            "sub_decompose: %d feature(s) skipped because they are "
+            "locked by user config or auto_aliases",
+            skipped_locked,
+        )
     if not candidates:
         return result
 
