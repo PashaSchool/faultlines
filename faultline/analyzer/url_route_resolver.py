@@ -297,14 +297,15 @@ _RE_AXIOS_CALL = re.compile(
     r"\baxios\.(?P<method>get|post|put|patch|delete|head|options)"
     r"\s*\(\s*['\"`](?P<path>[^'\"`]+)['\"`]",
 )
-# Generic typed-client call: ``apiClient.get('/users')``,
-# ``api.post('/foo')``, ``client.GET('/users/{id}')`` (openapi-fetch).
-# Bound by a literal-only path that starts with ``/``. Excludes
-# common false-positive receiver names so we don't claim things like
-# ``cache.get('key')`` are HTTP calls.
-_RE_TYPED_CLIENT_CALL = re.compile(
-    r"\b(?P<recv>[a-zA-Z_]\w*)\.(?P<method>GET|POST|PUT|PATCH|DELETE|"
-    r"get|post|put|patch|delete)"
+# openapi-fetch typed client: ``client.GET('/users/{id}')``. ONLY
+# uppercase methods to avoid false-positives on server-side
+# Express / Hono / Koa route definitions like
+# ``app.post('/route', handler)`` and ``router.get('/x', h)``,
+# which would otherwise be misclassified as outgoing HTTP calls
+# and break flow tracing (Step C v1 caused a 79% drop in
+# api-server reaches on documenso T18 because of this).
+_RE_OPENAPI_CLIENT_CALL = re.compile(
+    r"\b(?P<recv>[a-zA-Z_]\w*)\.(?P<method>GET|POST|PUT|PATCH|DELETE)"
     r"\s*\(\s*['\"`](?P<path>/[^'\"`]+)['\"`]",
 )
 _RE_TYPED_CLIENT_BLOCKLIST: frozenset[str] = frozenset({
@@ -312,7 +313,9 @@ _RE_TYPED_CLIENT_BLOCKLIST: frozenset[str] = frozenset({
     "cache", "redis", "kv", "store", "storage", "session", "localStorage",
     "sessionStorage", "cookies", "headers", "params", "searchParams",
     "url", "URL", "Map", "Set", "WeakMap", "WeakRef", "obj", "object",
-    "arr", "array", "list", "map", "set", "router", "navigate",
+    "arr", "array", "list", "map", "set", "navigate",
+    # Server-side route registrars — these are NOT client calls.
+    "app", "router", "route", "api", "r", "express", "hono", "koa",
 })
 _RE_TRPC_CLIENT = re.compile(
     r"\btrpc(?:Client)?\.(?P<router>[A-Za-z_]\w*)\.(?P<proc>[A-Za-z_]\w*)"
@@ -350,7 +353,7 @@ def _calls_from_source(rel_path: str, source: str) -> list[ClientCall]:
             pattern=_normalize_path(normalized),
             kind="fetch", line=line,
         ))
-    for m in _RE_TYPED_CLIENT_CALL.finditer(source):
+    for m in _RE_OPENAPI_CLIENT_CALL.finditer(source):
         recv = m.group("recv")
         if recv in _RE_TYPED_CLIENT_BLOCKLIST:
             continue
@@ -361,9 +364,9 @@ def _calls_from_source(rel_path: str, source: str) -> list[ClientCall]:
         seen.add((path, line))
         out.append(ClientCall(
             file=rel_path,
-            method=m.group("method").upper(),
+            method=m.group("method"),
             pattern=_normalize_path(path),
-            kind="typed-client", line=line,
+            kind="openapi-client", line=line,
         ))
     for m in _RE_AXIOS_CALL.finditer(source):
         path = m.group("path")

@@ -221,6 +221,11 @@ def sub_decompose_feature(
     resolved_model = model or DEFAULT_MODEL
 
     try:
+        # Bigger budget for huge buckets — the formbricks T2 run hit
+        # max_tokens at 16K on a 684-file ``web/design-system`` split,
+        # so the JSON came back truncated and the whole sub_decompose
+        # silently failed. Scale max_tokens with file count.
+        scaled_max_tokens = max(16_384, min(64_000, len(files) * 80))
         parsed = tool_use_scan(
             package_name=name,
             files=files,
@@ -231,6 +236,7 @@ def sub_decompose_feature(
             tracker=tracker,
             cost_label=f"sub-decompose:{name}",
             system_prompt=_SUB_DECOMPOSE_SYSTEM_PROMPT,
+            max_tokens=scaled_max_tokens,
         )
     except Exception as exc:  # noqa: BLE001 - opportunistic
         logger.warning("sub_decompose(%s): scan failed (%s) — keeping parent", name, exc)

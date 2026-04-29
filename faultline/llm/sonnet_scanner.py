@@ -2020,7 +2020,22 @@ def deep_scan_workspace(
                 key=lambda kv: len(kv[1]),
                 default=None,
             )
-            if primary is not None:
+            primary_size = len(primary[1]) if primary is not None else 0
+            # Guard rail: when leftover is large relative to the
+            # primary sub-feature, attaching it would pollute that
+            # feature with unrelated files (formbricks T2 saw 301
+            # unattributed files glued to `design-system`, ballooning
+            # it 383 → 684 and dragging server-handler files into the
+            # UI bucket — which then dropped api-server flow reaches
+            # by 79%). Cap at primary_size * 0.5; past that, route
+            # leftover to a dedicated ``<pkg>`` (or
+            # ``<pkg>/uncategorized`` so post-processing's anti-catchall
+            # split can run on it).
+            attach_cap = primary_size // 2
+            if (
+                primary is not None
+                and len(leftover_rel) <= max(attach_cap, 20)
+            ):
                 primary_name, primary_files = primary
                 sub_mapping[primary_name] = list(primary_files) + leftover_rel
                 logger.warning(
@@ -2032,6 +2047,23 @@ def deep_scan_workspace(
                     primary_name,
                     len(primary_files),
                     len(primary_files) + len(leftover_rel),
+                )
+            elif primary is not None:
+                # Leftover too big — separate bucket. ``/uncategorized``
+                # suffix is on the catch-all list so sub_decompose will
+                # try to split it later; if the split fails, the
+                # files at least don't pollute a real sub-feature.
+                bucket_name = f"{pkg.name}/uncategorized"
+                sub_mapping[bucket_name] = list(leftover_rel)
+                logger.warning(
+                    "workspace: %s — %d files unattributed (>50%% of "
+                    "primary '%s' [%d files]); kept in separate "
+                    "bucket %r so primary stays clean",
+                    pkg.name,
+                    len(leftover_rel),
+                    primary[0],
+                    primary_size,
+                    bucket_name,
                 )
             else:
                 sub_mapping[pkg.name] = list(leftover_rel)
