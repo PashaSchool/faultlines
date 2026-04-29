@@ -249,7 +249,16 @@ def run(
                 from faultline.analyzer.repo_config import load_repo_config
                 _cfg = load_repo_config(repo_root)
                 if _cfg is not None:
-                    sub_locked = _cfg.all_canonical_names()
+                    base = _cfg.all_canonical_names()
+                    # Also lock derived parents: if "ui/foo" is canonical,
+                    # then "ui" itself must not be re-decomposed into
+                    # different children on the next run.
+                    derived = {
+                        n.split("/", 1)[0]
+                        for n in base
+                        if "/" in n
+                    }
+                    sub_locked = frozenset(base | derived)
             except Exception:  # noqa: BLE001 — opportunistic
                 pass
         before = len(result.features)
