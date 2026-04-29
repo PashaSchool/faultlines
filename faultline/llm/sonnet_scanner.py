@@ -381,7 +381,22 @@ _TARGET_PACKAGE_TEMPLATE = (
     "has a single cohesive purpose (e.g. `auth`, `db`, `cli`), return ONE feature "
     "named after the package. Only split into multiple features if you can identify "
     "2 or more distinct business sub-domains from the file paths. **HARD CAP: never "
-    "more than 8 features for a single package, ever.**"
+    "more than 8 features for a single package, ever.**\n\n"
+    "**Anti-pattern — NEVER emit catch-all leftover names.** The post-processor "
+    "now flags these as bugs:\n"
+    "- `<pkg>/shell`, `<pkg>/core`, `<pkg>/common`, `<pkg>/main`, `<pkg>/app`, "
+    "`<pkg>/misc`, `<pkg>/utils`, `<pkg>/lib`, `<pkg>/base`, `<pkg>/general`\n\n"
+    "If you are tempted to dump residual files into a bucket like that, instead:\n"
+    "1. Look at the file paths inside it and see if they form 2-3 cohesive groups "
+    "(e.g. ``ui/components/*`` → ``design-system``; ``api/handlers/*`` → "
+    "``api-routes``). Split into those.\n"
+    "2. If a residual really has no domain, fold it into the most relevant "
+    "sub-feature you returned, OR drop it (the file gets reassigned to "
+    "``shared-infra`` automatically).\n\n"
+    "A package with 600+ files almost always has 6-8 distinct concerns "
+    "(UI library, API layer, business modules, integrations, …) — find them. "
+    "Returning one giant ``<pkg>/shell`` swallows the whole package and "
+    "destroys feature granularity for the engineer reading the dashboard."
 )
 
 # Day 14 post-mission polish: libraries over-merged when the repo-wide

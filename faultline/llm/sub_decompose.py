@@ -318,13 +318,26 @@ def sub_decompose_oversized(
     # cross-run feature-name stability.
     locked: frozenset[str] = locked_names or frozenset()
 
+    # Catch-all suffixes that almost always indicate a leftover bucket
+    # rather than a real feature. Trigger sub-decompose at a much lower
+    # threshold (50 files) so an aggressive ``web/shell`` 680-file
+    # bucket gets split into proper sub-features instead of riding
+    # along under the default ``threshold`` budget.
+    catchall_suffixes = (
+        "/shell", "/core", "/common", "/main", "/app", "/misc",
+        "/utils", "/lib", "/base", "/general", "/leftover", "/residual",
+    )
+    catchall_threshold = max(50, MIN_DYNAMIC_THRESHOLD)
+
     # Snapshot keys so we can mutate ``result.features`` while iterating.
     candidates = []
     skipped_locked = 0
     for name, files in result.features.items():
         if name in _PROTECTED_NAMES:
             continue
-        if len(files) <= effective_threshold:
+        is_catchall = any(name.endswith(suf) for suf in catchall_suffixes)
+        size_floor = catchall_threshold if is_catchall else effective_threshold
+        if len(files) <= size_floor:
             continue
         if name in locked:
             skipped_locked += 1

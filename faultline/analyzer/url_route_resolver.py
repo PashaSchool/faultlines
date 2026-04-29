@@ -285,13 +285,35 @@ def _routes_from_trpc(
 
 
 _RE_FETCH_CALL = re.compile(
-    r"\bfetch\s*\(\s*['\"`](?P<path>[^'\"`]+)['\"`]"
+    r"\bfetch\s*\(\s*['\"`](?P<path>[^'\"`$]+)['\"`]"
     r"(?:\s*,\s*\{\s*method\s*:\s*['\"](?P<method>[A-Z]+)['\"])?",
+)
+# Template-literal variant: fetch(`/api/orgs/${id}/users`) — drop the
+# ${...} interpolations and keep the template chunk as the path.
+_RE_FETCH_TEMPLATE = re.compile(
+    r"\bfetch\s*\(\s*`(?P<path>/[^`]*)`",
 )
 _RE_AXIOS_CALL = re.compile(
     r"\baxios\.(?P<method>get|post|put|patch|delete|head|options)"
     r"\s*\(\s*['\"`](?P<path>[^'\"`]+)['\"`]",
 )
+# Generic typed-client call: ``apiClient.get('/users')``,
+# ``api.post('/foo')``, ``client.GET('/users/{id}')`` (openapi-fetch).
+# Bound by a literal-only path that starts with ``/``. Excludes
+# common false-positive receiver names so we don't claim things like
+# ``cache.get('key')`` are HTTP calls.
+_RE_TYPED_CLIENT_CALL = re.compile(
+    r"\b(?P<recv>[a-zA-Z_]\w*)\.(?P<method>GET|POST|PUT|PATCH|DELETE|"
+    r"get|post|put|patch|delete)"
+    r"\s*\(\s*['\"`](?P<path>/[^'\"`]+)['\"`]",
+)
+_RE_TYPED_CLIENT_BLOCKLIST: frozenset[str] = frozenset({
+    # Storage / cache APIs that share verb names — never HTTP.
+    "cache", "redis", "kv", "store", "storage", "session", "localStorage",
+    "sessionStorage", "cookies", "headers", "params", "searchParams",
+    "url", "URL", "Map", "Set", "WeakMap", "WeakRef", "obj", "object",
+    "arr", "array", "list", "map", "set", "router", "navigate",
+})
 _RE_TRPC_CLIENT = re.compile(
     r"\btrpc(?:Client)?\.(?P<router>[A-Za-z_]\w*)\.(?P<proc>[A-Za-z_]\w*)"
     r"\.(?:useQuery|useMutation|useInfiniteQuery|query|mutation)\s*\(",
@@ -300,16 +322,48 @@ _RE_TRPC_CLIENT = re.compile(
 
 def _calls_from_source(rel_path: str, source: str) -> list[ClientCall]:
     out: list[ClientCall] = []
+    seen: set[tuple[str, int]] = set()
     for m in _RE_FETCH_CALL.finditer(source):
         path = m.group("path")
         if not path.startswith("/"):
             continue  # external URL, ignore
         method = (m.group("method") or "*").upper()
         line = source.count("\n", 0, m.start()) + 1
+        seen.add((path, line))
         out.append(ClientCall(
             file=rel_path, method=method,
             pattern=_normalize_path(path),
             kind="fetch", line=line,
+        ))
+    for m in _RE_FETCH_TEMPLATE.finditer(source):
+        path = m.group("path")
+        # Strip ``${...}`` interpolations down to a path-param-style
+        # placeholder so the matcher in :class:`RouteRegistry` still
+        # works (``/api/orgs/${id}/users`` → ``/api/orgs/:p/users``).
+        normalized = re.sub(r"\$\{[^}]*\}", ":p", path)
+        line = source.count("\n", 0, m.start()) + 1
+        if (normalized, line) in seen:
+            continue
+        seen.add((normalized, line))
+        out.append(ClientCall(
+            file=rel_path, method="*",
+            pattern=_normalize_path(normalized),
+            kind="fetch", line=line,
+        ))
+    for m in _RE_TYPED_CLIENT_CALL.finditer(source):
+        recv = m.group("recv")
+        if recv in _RE_TYPED_CLIENT_BLOCKLIST:
+            continue
+        path = m.group("path")
+        line = source.count("\n", 0, m.start()) + 1
+        if (path, line) in seen:
+            continue
+        seen.add((path, line))
+        out.append(ClientCall(
+            file=rel_path,
+            method=m.group("method").upper(),
+            pattern=_normalize_path(path),
+            kind="typed-client", line=line,
         ))
     for m in _RE_AXIOS_CALL.finditer(source):
         path = m.group("path")
