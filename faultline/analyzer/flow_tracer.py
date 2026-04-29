@@ -232,6 +232,47 @@ def _resolve_target_symbols(
     return matches
 
 
+# ── Heuristics ──────────────────────────────────────────────────
+
+
+def _add_directory_neighbors(
+    traced: TracedFlow,
+    entry_file: str,
+    all_files: set[str],
+    *,
+    max_extra: int = 8,
+) -> None:
+    """Add up to ``max_extra`` files from the entry file's directory
+    as side-effect-only participants at depth=1.
+
+    Triggered only when symbol_graph BFS returned an entry-only
+    trace. The neighbors give the dashboard a sensible "flow scope"
+    estimate even for languages the graph doesn't index (Python,
+    Go, Rust).
+
+    No-op when the directory has no other source files in the
+    feature's file set.
+    """
+    from pathlib import PurePosixPath
+    entry_dir = str(PurePosixPath(entry_file).parent)
+    if not entry_dir or entry_dir == ".":
+        return
+    seen = {p.file for p in traced.participants}
+    candidates = [
+        f for f in all_files
+        if f != entry_file
+        and f not in seen
+        and str(PurePosixPath(f).parent) == entry_dir
+    ]
+    # Stable ordering so the result is deterministic across runs.
+    candidates.sort()
+    for f in candidates[:max_extra]:
+        traced.participants.append(TracedParticipant(
+            file=f, depth=1, side_effect_only=True,
+        ))
+        traced.visited_files.add(f)
+
+
 # ── Top-level orchestrator ──────────────────────────────────────
 
 
@@ -307,6 +348,19 @@ def trace_flow_callgraph(
                 graph, entry_file, entry_line,
                 depth=depth, max_participants=max_participants,
             )
+            # Quick fix #2 — directory-neighbor fallback. When BFS
+            # traversal yields ≤1 participant (entry-only), the
+            # symbol_graph couldn't follow imports — typical for
+            # Python entry points (Django URL configs, FastAPI
+            # routers) and for Go/Rust files since the graph
+            # currently indexes TS/JS only. Add up to 8 source
+            # files from the same directory as side-effect-only
+            # participants at depth=1 so the dashboard shows real
+            # flow scope instead of a single file.
+            if len(traced.participants) <= 1:
+                _add_directory_neighbors(
+                    traced, entry_file, all_files, max_extra=8,
+                )
             # Classify any new files we saw.
             new_files = [
                 p.file for p in traced.participants
