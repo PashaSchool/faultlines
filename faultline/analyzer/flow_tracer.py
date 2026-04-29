@@ -235,6 +235,53 @@ def _resolve_target_symbols(
 # ── Heuristics ──────────────────────────────────────────────────
 
 
+_STOP_TOKENS = frozenset({
+    "flow", "the", "a", "an", "of", "to", "from", "and", "or",
+    "with", "by", "in", "on", "for", "as", "view", "page",
+})
+
+
+def _tokens(name: str) -> set[str]:
+    """Lowercase tokens from a flow name, stop-words removed."""
+    import re as _re
+    raw = _re.split(r"[\s\-_/]+", (name or "").lower())
+    return {t for t in raw if t and t not in _STOP_TOKENS}
+
+
+def _match_files_by_flow_name(
+    flow_name: str,
+    feature_files: list[str],
+    *,
+    max_n: int = 8,
+) -> list[str]:
+    """Score feature files by token overlap with the flow name.
+
+    Used as a fallback when Sonnet didn't record an entry_point for
+    a flow, so trace_flow can't run. Returns up to ``max_n`` files
+    whose filename or directory matches at least one flow-name token.
+
+    Scoring: count matching tokens. Filename hits weigh 2, directory
+    hits weigh 1. Files with no overlap are excluded.
+    """
+    from pathlib import PurePosixPath
+    flow_tokens = _tokens(flow_name)
+    if not flow_tokens or not feature_files:
+        return []
+    scored: list[tuple[int, str]] = []
+    for f in feature_files:
+        p = PurePosixPath(f)
+        stem_tokens = _tokens(p.stem)
+        dir_tokens = _tokens(str(p.parent))
+        score = (
+            2 * len(flow_tokens & stem_tokens)
+            + 1 * len(flow_tokens & dir_tokens)
+        )
+        if score > 0:
+            scored.append((score, f))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [f for _, f in scored[:max_n]]
+
+
 def _add_directory_neighbors(
     traced: TracedFlow,
     entry_file: str,
@@ -338,29 +385,45 @@ def trace_flow_callgraph(
             desc = per_flow_descs.get(flow_name) or ""
             m = entry_re.search(desc)
             if not m:
-                continue
-            entry_file = m.group(1).strip()
-            try:
-                entry_line = int(m.group(2))
-            except ValueError:
-                entry_line = 0
-            traced = trace_flow(
-                graph, entry_file, entry_line,
-                depth=depth, max_participants=max_participants,
-            )
-            # Quick fix #2 — directory-neighbor fallback. When BFS
-            # traversal yields ≤1 participant (entry-only), the
-            # symbol_graph couldn't follow imports — typical for
-            # Python entry points (Django URL configs, FastAPI
-            # routers) and for Go/Rust files since the graph
-            # currently indexes TS/JS only. Add up to 8 source
-            # files from the same directory as side-effect-only
-            # participants at depth=1 so the dashboard shows real
-            # flow scope instead of a single file.
-            if len(traced.participants) <= 1:
-                _add_directory_neighbors(
-                    traced, entry_file, all_files, max_extra=8,
+                # No entry_point recorded by Sonnet (~30% of flows
+                # on plane). Don't drop — flow names are real user
+                # actions. Backfill participants by token-matching
+                # the flow name against feature files.
+                feature_files = result.features.get(feature_name, [])
+                matched = _match_files_by_flow_name(
+                    flow_name, feature_files, max_n=8,
                 )
+                if not matched:
+                    continue
+                traced = TracedFlow(entry_file=matched[0])
+                for i, fpath in enumerate(matched):
+                    traced.participants.append(TracedParticipant(
+                        file=fpath, depth=1 if i > 0 else 0,
+                        side_effect_only=False,
+                    ))
+                    traced.visited_files.add(fpath)
+                logger.info(
+                    "flow_tracer: %s/%s — no entry_point, backfilled "
+                    "%d files via token match",
+                    feature_name, flow_name, len(matched),
+                )
+            else:
+                entry_file = m.group(1).strip()
+                try:
+                    entry_line = int(m.group(2))
+                except ValueError:
+                    entry_line = 0
+                traced = trace_flow(
+                    graph, entry_file, entry_line,
+                    depth=depth, max_participants=max_participants,
+                )
+                # Quick fix #2 — directory-neighbor fallback when
+                # BFS yields ≤1 participant (entry-only), e.g. Python
+                # entry points where symbol_graph can't follow.
+                if len(traced.participants) <= 1:
+                    _add_directory_neighbors(
+                        traced, entry_file, all_files, max_extra=8,
+                    )
             # Classify any new files we saw.
             new_files = [
                 p.file for p in traced.participants
