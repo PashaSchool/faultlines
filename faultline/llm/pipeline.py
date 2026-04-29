@@ -143,6 +143,40 @@ def run(
     doc_files = partition[Bucket.DOCUMENTATION]
     infra_files = partition[Bucket.INFRASTRUCTURE]
 
+    # Stability hint: read canonical names from .faultline.yaml so
+    # Sonnet can prefer them verbatim when naming detected features.
+    preferred_names: list[str] = []
+    locked_canonicals: frozenset[str] = frozenset()
+    if repo_root is not None:
+        try:
+            from faultline.analyzer.repo_config import load_repo_config
+            _cfg_pre = load_repo_config(repo_root)
+            if _cfg_pre is not None:
+                locked_canonicals = _cfg_pre.all_canonical_names()
+                # Top-level canonicals only — sub-feature locks
+                # (with ``/``) are handled later by parent-collapse.
+                preferred_names = sorted(
+                    n for n in locked_canonicals if "/" not in n
+                )
+        except Exception:  # noqa: BLE001 — opportunistic
+            pass
+
+    # Step 2 stability: load file → previous-canonical map. Used after
+    # deep_scan returns to renormalize fresh feature names whose file
+    # set overwhelmingly belongs to a previous canonical.
+    prev_assignments: dict[str, str] = {}
+    if repo_root is not None:
+        try:
+            from faultline.analyzer.assignments import load_assignments
+            prev_assignments = load_assignments(repo_root)
+            if prev_assignments:
+                logger.info(
+                    "pipeline: loaded %d prior file→feature assignments",
+                    len(prev_assignments),
+                )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.debug("pipeline: load_assignments skipped (%s)", exc)
+
     if _should_use_workspace_path(workspace):
         filtered_workspace = _filter_workspace_sources(workspace, source_files)
         logger.info(
@@ -160,6 +194,7 @@ def run(
             commit_context=commit_context,
             use_tools=use_tools,
             repo_root=repo_root,
+            preferred_names=preferred_names or None,
         )
     else:
         logger.info(
@@ -175,10 +210,31 @@ def run(
             tracker=tracker,
             is_library=is_library,
             commit_context=commit_context,
+            preferred_names=preferred_names or None,
         )
 
     if result is None:
         return None
+
+    # Stage 1.35 (Step 2): Renormalize fresh feature names against the
+    # previous scan's file → canonical map. If a detected feature has
+    # ≥60% of its files previously assigned to a single locked canonical,
+    # rename it to that canonical. Catches the cases where Sonnet
+    # ignored the prompt-level preferred_names hint (Step 1).
+    if prev_assignments and locked_canonicals:
+        try:
+            from faultline.analyzer.assignments import renormalize_features
+            n = renormalize_features(
+                result, prev_assignments,
+                locked_canonicals=locked_canonicals,
+            )
+            if n:
+                logger.info(
+                    "pipeline: renormalized %d features via assignment cache",
+                    n,
+                )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("pipeline: renormalize_features failed (%s)", exc)
 
     # Stage 1.4: Auto-fold universally-tooling packages into
     # shared-infra. Things like ``tsconfig``, ``eslint-config``,
@@ -387,6 +443,14 @@ def run(
         except Exception as exc:  # noqa: BLE001 — opportunistic
             logger.warning("pipeline: auto-save canonicals failed (%s)", exc)
 
+        # Step 2 stability: persist this scan's file → feature
+        # mapping so the NEXT scan can renormalize against it.
+        try:
+            from faultline.analyzer.assignments import save_assignments
+            save_assignments(result, repo_root)
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("pipeline: save_assignments failed (%s)", exc)
+
     return result
 
 
@@ -504,6 +568,7 @@ def _run_single_call(
     tracker: CostTracker | None,
     is_library: bool,
     commit_context: str | None,
+    preferred_names: list[str] | None = None,
 ) -> DeepScanResult | None:
     """Single-call dispatch: build candidates, hand them to ``deep_scan``.
 
@@ -527,4 +592,5 @@ def _run_single_call(
         model=model,
         tracker=tracker,
         commit_context=commit_context,
+        preferred_names=preferred_names,
     )

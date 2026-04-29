@@ -1213,6 +1213,7 @@ def deep_scan(
     package_mode: bool = False,
     package_name: str | None = None,
     commit_context: str | None = None,
+    preferred_names: list[str] | None = None,
 ) -> DeepScanResult | None:
     """
     Performs a deep scan using Sonnet to detect features and flows.
@@ -1410,6 +1411,22 @@ def deep_scan(
             f"{prompt}\n\n"
             f"## Recent activity (last 90 days, top files/dirs)\n"
             f"{commit_context}"
+        )
+
+    # Stability hint: the user's ``.faultline.yaml`` lists canonical
+    # feature names from prior scans. Tell Sonnet to prefer those
+    # verbatim when it would otherwise invent a near-duplicate
+    # (``prisma`` vs ``prisma-database``, ``email`` vs
+    # ``email-notifications``, ``user-authentication`` vs ``auth``).
+    # Bounded at 40 to keep prompt size reasonable on big repos.
+    if preferred_names:
+        names_block = "\n".join(f"  - {n}" for n in preferred_names[:40])
+        prompt = (
+            f"{prompt}\n\n"
+            f"## Preferred feature names (verbatim if a detected feature "
+            f"matches one of these by domain — prefer the listed name "
+            f"over inventing a synonym)\n"
+            f"{names_block}"
         )
 
     logger.info("Deep scan: %d candidates, %d unmatched files → Sonnet", len(real_candidates), len(unmatched))
@@ -1710,6 +1727,7 @@ def deep_scan_workspace(
     max_workers: int = _MAX_WORKERS,
     use_tools: bool = False,
     repo_root=None,  # pathlib.Path; required when use_tools=True
+    preferred_names: list[str] | None = None,
 ) -> DeepScanResult | None:
     """Run ``deep_scan`` once per workspace package and merge the results.
 
@@ -1896,6 +1914,7 @@ def deep_scan_workspace(
                     package_mode=True,
                     package_name=pkg.name,
                     commit_context=commit_context,
+                    preferred_names=preferred_names,
                 )
         except BudgetExceeded:
             raise
