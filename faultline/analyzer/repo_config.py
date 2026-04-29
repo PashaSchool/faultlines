@@ -444,31 +444,43 @@ def _token_match_canonical(
     ``prisma-database`` ≡ ``prisma`` while keeping
     ``user-authentication`` distinct from ``team-management``.
 
-    Sub-features (anything containing ``/``) are excluded — we only
-    rename top-level parents to top-level canonicals here.
+    Sub-features (with ``/``) match only against canonicals that
+    share the same parent prefix — ``ee/plan-usage-limits`` can
+    alias to ``ee/plan-limits-enforcement`` but never to
+    ``billing/X``. Top-level names match other top-level names.
     """
-    if "/" in variant:
-        return None
     try:
         from faultline.benchmark.metrics import _name_tokens
     except Exception:  # noqa: BLE001
         return None
-    vt = _name_tokens(variant)
+
+    variant_parent: str | None = None
+    variant_tail = variant
+    if "/" in variant:
+        variant_parent, variant_tail = variant.split("/", 1)
+
+    vt = _name_tokens(variant_tail)
     if not vt:
         return None
+
     for canonical in canonicals:
+        canonical_parent: str | None = None
+        canonical_tail = canonical
         if "/" in canonical:
+            canonical_parent, canonical_tail = canonical.split("/", 1)
+        # Same scope only: top-level↔top-level, or shared parent.
+        if variant_parent != canonical_parent:
             continue
-        ct = _name_tokens(canonical)
+        ct = _name_tokens(canonical_tail)
         if not ct:
             continue
         # Token-set equal, OR one is a non-empty subset of the other
         # (covers ``prisma`` ↔ ``prisma-database``, ``email`` ↔
-        # ``email-notifications``, and word-order swaps). Single-
-        # token canonicals are allowed here — user has explicitly
-        # opted in by listing them in ``.faultline.yaml``, so the
-        # over-matching risk that gates ``_name_matches`` doesn't
-        # apply.
+        # ``email-notifications``, ``ee/plan-usage-limits`` ↔
+        # ``ee/plan-limits-enforcement``). Single-token canonicals
+        # are allowed here — user has explicitly opted in by listing
+        # them in ``.faultline.yaml``, so the over-matching risk that
+        # gates ``_name_matches`` doesn't apply.
         if vt == ct or vt.issubset(ct) or ct.issubset(vt):
             return canonical
     return None
