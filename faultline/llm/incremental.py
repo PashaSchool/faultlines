@@ -344,10 +344,28 @@ def execute_monolith_incremental(
         }
 
     candidates = detect_candidates(sorted(subset_files))
+
+    # P4: bias the subset scan toward existing canonical names.
+    # The caller passes ``preferred_names`` from .faultline.yaml
+    # top-level — but in monolith mode Sonnet only sees the diff
+    # subset, so it can easily invent a brand-new feature name for
+    # a fresh file that semantically belongs in an existing clean
+    # feature. Augment the hint with EVERY top-level prior feature
+    # name (no slashes — sub-features stay under their parent's
+    # parent-collapse path). Capped at 60 to keep prompt size sane.
+    augmented_preferred: list[str] = list(preferred_names or [])
+    for name in prior.features:
+        if "/" in name or name in augmented_preferred:
+            continue
+        augmented_preferred.append(name)
+    augmented_preferred = augmented_preferred[:60]
+
     logger.info(
         "execute_monolith_incremental: re-scanning %d files "
-        "(%d stale features + %d fresh files) → %d candidates",
+        "(%d stale features + %d fresh files) → %d candidates, "
+        "%d preferred names",
         len(subset_files), len(stale_set), len(fresh), len(candidates),
+        len(augmented_preferred),
     )
 
     fresh_result = deep_scan(
@@ -359,7 +377,7 @@ def execute_monolith_incremental(
         model=model,
         tracker=tracker,
         commit_context=commit_context,
-        preferred_names=preferred_names,
+        preferred_names=augmented_preferred or None,
     )
     if fresh_result is None:
         logger.warning(
