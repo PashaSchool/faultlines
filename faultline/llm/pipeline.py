@@ -437,8 +437,13 @@ def run(
     if repo_root is not None:
         try:
             from faultline.analyzer.repo_config import auto_save_canonicals
+            # write_if_missing=True so the first scan creates the yaml.
+            # Without this, ``--incremental`` second-scan has no
+            # canonical lock to anchor naming against — names drift
+            # and the file-assignment cache underperforms.
             auto_save_canonicals(
                 repo_root, result.features, result.descriptions,
+                write_if_missing=True,
             )
         except Exception as exc:  # noqa: BLE001 — opportunistic
             logger.warning("pipeline: auto-save canonicals failed (%s)", exc)
