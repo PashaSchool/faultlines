@@ -531,6 +531,26 @@ def analyze(
                     "[blue]Running new pipeline[/blue] "
                     "(pass [dim]--legacy[/dim] to use the 5-strategy fallback)"
                 )
+                # FAULTLINE_FORCE_FLOWS=1 overrides library detection
+                # so flows are computed even when the repo looks like
+                # a library. Useful for apps that ship as packages
+                # (Superset, Airflow, etc.) where pyproject.toml +
+                # missing main.py mislabels them.
+                import os as _os_force
+                if (
+                    _os_force.environ.get("FAULTLINE_FORCE_FLOWS") == "1"
+                    and getattr(repo_structure, "is_library", False)
+                ):
+                    try:
+                        repo_structure = repo_structure.__class__(
+                            **{**repo_structure.__dict__, "is_library": False}
+                        )
+                    except Exception:
+                        repo_structure.is_library = False
+                    console.print(
+                        "[yellow]FAULTLINE_FORCE_FLOWS=1 — overriding "
+                        "library classification to keep flows enabled.[/yellow]"
+                    )
                 try:
                     _new_pipeline_result = _run_new_pipeline(
                         analysis_files=analysis_files,

@@ -219,6 +219,14 @@ def get_tracked_files(repo: Repo, src: str | None = None) -> list[str]:
         "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
         # Tooling / CI — not source code
         ".github", ".husky", ".storybook", ".circleci",
+        # AI assistants / IDE configs leaking project-internal docs
+        # into the scan (caused superset to detect a bogus
+        # ``ai-assistant-protocol`` feature from .claude/projects/...).
+        ".claude", ".cursor", ".idea", ".vscode", ".aider",
+        # Lockfiles directories (some repos)
+        ".turbo", ".cache", ".parcel-cache",
+        # Test fixtures that produce noise
+        ".devcontainer",
     }
     skip_filenames = {
         # Config and lockfiles at any depth

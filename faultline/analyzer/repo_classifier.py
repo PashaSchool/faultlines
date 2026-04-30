@@ -168,10 +168,15 @@ _PY_APP_ENTRYPOINTS = (
 def _has_pyproject_console_script(pyproject_path: Path) -> bool:
     """True when ``pyproject.toml`` registers any console script.
 
-    Looks at both standard ``[project.scripts]`` (PEP 621) and
-    ``[tool.poetry.scripts]`` (Poetry). A non-empty mapping under
-    either is enough — we don't try to validate the entry-point
-    targets.
+    Looks at:
+      - standard ``[project.scripts]`` (PEP 621),
+      - ``[tool.poetry.scripts]`` (Poetry),
+      - ``project.dynamic`` containing ``"scripts"`` or
+        ``"entry-points"`` (PEP 621 dynamic — declared in
+        ``setup.py`` / setuptools), used by Superset, Airflow, etc.
+
+    A non-empty mapping under either is enough — we don't try to
+    validate the entry-point targets.
 
     Tolerates malformed TOML / missing tomllib (fallback to a
     shallow regex scan) so the classifier never crashes on weird
@@ -189,7 +194,17 @@ def _has_pyproject_console_script(pyproject_path: Path) -> bool:
         poetry_scripts = (
             ((data.get("tool") or {}).get("poetry") or {}).get("scripts") or {}
         )
-        return isinstance(poetry_scripts, dict) and bool(poetry_scripts)
+        if isinstance(poetry_scripts, dict) and poetry_scripts:
+            return True
+        # Dynamic scripts — pyproject defers to setup.py /
+        # setuptools.dynamic. Treat as if scripts WERE present
+        # because the build artefact will register them.
+        dynamic = (data.get("project") or {}).get("dynamic") or []
+        if isinstance(dynamic, list) and (
+            "scripts" in dynamic or "entry-points" in dynamic
+        ):
+            return True
+        return False
     except ImportError:  # pragma: no cover — Python < 3.11 fallback
         try:
             text = pyproject_path.read_text(encoding="utf-8", errors="ignore")
@@ -202,7 +217,35 @@ def _has_pyproject_console_script(pyproject_path: Path) -> bool:
             block = _re.search(rf"{header}\n((?:[^\[]+\n)+)", text)
             if block and _re.search(r"^\s*\w[\w-]*\s*=", block.group(1), _re.MULTILINE):
                 return True
+        # Dynamic fallback: ``dynamic = [..., "scripts", ...]``.
+        if _re.search(
+            r'dynamic\s*=\s*\[[^\]]*"(scripts|entry-points)"', text,
+        ):
+            return True
         return False
+
+
+def _has_setup_py_console_script(setup_py: Path) -> bool:
+    """True when ``setup.py`` registers a ``console_scripts`` entry point.
+
+    Many Python apps (Superset, Airflow, Trino) declare scripts in
+    ``setup.py`` rather than pyproject.toml. We look for the
+    ``entry_points`` mapping containing ``console_scripts`` plus a
+    non-empty list. Regex-based to avoid executing setup.py.
+    """
+    try:
+        text = setup_py.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    import re as _re
+    # ``entry_points={"console_scripts": ["foo=bar:baz"]}`` or
+    # multi-line equivalents. Be permissive on whitespace.
+    if _re.search(
+        r'["\']console_scripts["\']\s*:\s*\[\s*["\'][^"\']+["\']',
+        text,
+    ):
+        return True
+    return False
 
 
 def detect_library(
@@ -306,6 +349,11 @@ def detect_library(
             _has_pyproject_console_script(pyproject)
             if pyproject.exists() else False
         )
+        # Also look in setup.py for ``entry_points["console_scripts"]``.
+        # Caught Superset which declares its CLI in setup.py rather
+        # than pyproject.toml.
+        if not has_console_script and setup_py.exists():
+            has_console_script = _has_setup_py_console_script(setup_py)
         if has_root_entrypoint or has_console_script:
             app_votes += 1
             if has_console_script:
