@@ -176,9 +176,27 @@ def load_scan_as_seed(json_path: str | Path) -> PriorScan:
             }
             ps = fl.get("participants")
             if isinstance(ps, list):
-                # Keep raw dicts — the trace-flow stage will rebuild
-                # FlowParticipant objects from them when needed.
-                per_flow_participants[fname] = ps
+                # Convert each dict into a TracedParticipant so
+                # downstream injectors that expect ``.file`` /
+                # ``.layer`` attributes (cli._inject_new_pipeline_flows)
+                # work without changes. The output JSON uses ``path``
+                # (Pydantic model field), the intermediate uses
+                # ``file`` (dataclass field) — re-map here.
+                from faultline.analyzer.flow_tracer import TracedParticipant
+                converted: list[Any] = []
+                for p_dict in ps:
+                    if not isinstance(p_dict, dict):
+                        continue
+                    p_path = p_dict.get("path") or p_dict.get("file")
+                    if not p_path:
+                        continue
+                    converted.append(TracedParticipant(
+                        file=str(p_path),
+                        depth=int(p_dict.get("depth") or 0),
+                        side_effect_only=bool(p_dict.get("side_effect_only")),
+                        layer=p_dict.get("layer") or "support",
+                    ))
+                per_flow_participants[fname] = converted
 
         if flow_names:
             result.flows[name] = flow_names

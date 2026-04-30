@@ -87,7 +87,11 @@ def test_load_scan_rehydrates_flows(tmp_path):
     assert "sign-in-flow" in prior.result.flow_descriptions["user-authentication"]
     # Participants come back as raw dicts (rebuild only if needed).
     flow_participants = prior.result.flow_participants["user-authentication"]
-    assert flow_participants["sign-in-flow"][0]["path"] == "src/auth/login.ts"
+    # Rehydrated as TracedParticipant — the intermediate dataclass
+    # downstream injectors expect (with ``file`` attribute, not ``path``).
+    p0 = flow_participants["sign-in-flow"][0]
+    assert p0.file == "src/auth/login.ts"
+    assert p0.layer == "ui"
 
 
 def test_load_scan_carries_feature_stats(tmp_path):
