@@ -129,3 +129,155 @@ def test_multiple_features_stale_when_files_in_each_change():
     plan = plan_incremental(prior, diff)
     assert plan.stale_features == ["a", "c"]
     assert plan.clean_features == ["b"]
+
+
+# ── Stage 4: workspace partial re-scan ──────────────────────────
+
+
+from faultline.analyzer.workspace import WorkspaceInfo, WorkspacePackage  # noqa: E402
+from faultline.llm.incremental import (  # noqa: E402
+    _merge_carry_with_fresh,
+    execute_workspace_incremental,
+    features_belonging_to_packages,
+    identify_stale_packages,
+)
+from faultline.llm.sonnet_scanner import DeepScanResult  # noqa: E402
+
+
+def _ws(packages: dict[str, list[str]]) -> WorkspaceInfo:
+    return WorkspaceInfo(
+        detected=True,
+        manager="pnpm",
+        packages=[
+            WorkspacePackage(name=n, path=f"packages/{n}", files=fs)
+            for n, fs in packages.items()
+        ],
+        root_files=[],
+    )
+
+
+def test_identify_stale_packages_splits_correctly():
+    workspace = _ws({
+        "auth": ["packages/auth/login.ts", "packages/auth/session.ts"],
+        "billing": ["packages/billing/charge.ts"],
+        "ui": ["packages/ui/button.tsx"],
+    })
+    diff = GitDiff(base_sha="x", head_sha="y")
+    diff.modified.add("packages/auth/login.ts")
+    diff.added.add("packages/billing/refund.ts")  # new file under billing
+    stale, clean = identify_stale_packages(workspace, diff)
+    assert {p.name for p in stale} == {"auth"}  # added file isn't in pkg.files
+    # Add the new file to billing.files so it's recognized.
+    workspace.packages[1].files.append("packages/billing/refund.ts")
+    diff2 = GitDiff(base_sha="x", head_sha="y")
+    diff2.added.add("packages/billing/refund.ts")
+    stale2, _ = identify_stale_packages(workspace, diff2)
+    assert {p.name for p in stale2} == {"billing"}
+
+
+def test_identify_stale_picks_up_deleted_files():
+    workspace = _ws({
+        "auth": ["packages/auth/a.ts", "packages/auth/b.ts"],
+        "ui": ["packages/ui/c.tsx"],
+    })
+    diff = GitDiff(base_sha="x", head_sha="y")
+    diff.deleted.add("packages/auth/a.ts")
+    stale, clean = identify_stale_packages(workspace, diff)
+    assert {p.name for p in stale} == {"auth"}
+    assert {p.name for p in clean} == {"ui"}
+
+
+def test_features_belonging_to_packages_majority_vote():
+    prior = _prior({
+        "auth": ["packages/auth/a.ts", "packages/auth/b.ts"],
+        "billing": ["packages/billing/c.ts", "packages/billing/d.ts"],
+        "shared-thing": [
+            "packages/auth/x.ts", "packages/auth/y.ts",
+            "packages/billing/z.ts",  # majority is auth (2/3)
+        ],
+    })
+    auth_pkg = WorkspacePackage(
+        name="auth", path="packages/auth",
+        files=[
+            "packages/auth/a.ts", "packages/auth/b.ts",
+            "packages/auth/x.ts", "packages/auth/y.ts",
+        ],
+    )
+    belonging = features_belonging_to_packages(prior, [auth_pkg])
+    # auth (full overlap) and shared-thing (majority) should belong.
+    assert belonging == {"auth", "shared-thing"}
+
+
+def test_merge_carries_clean_features_drops_deleted():
+    prior_result = DeepScanResult()
+    prior_result.features["auth"] = ["packages/auth/a.ts", "packages/auth/b.ts"]
+    prior_result.features["ui"] = ["packages/ui/c.tsx"]
+    prior_result.descriptions["auth"] = "Auth desc"
+    prior_result.descriptions["ui"] = "UI desc"
+    prior_result.flows["auth"] = ["sign-in"]
+    prior = PriorScan(
+        result=prior_result, last_sha="abc",
+        feature_stats={}, flow_stats={}, scan_meta={},
+    )
+
+    fresh = DeepScanResult()
+    fresh.features["auth-rescanned"] = ["packages/auth/a.ts"]
+    fresh.descriptions["auth-rescanned"] = "Fresh auth"
+
+    clean_pkg = WorkspacePackage(
+        name="ui", path="packages/ui",
+        files=["packages/ui/c.tsx"],
+    )
+
+    merged = _merge_carry_with_fresh(
+        prior=prior, fresh=fresh,
+        clean_packages=[clean_pkg],
+        deleted_files=set(),
+    )
+    # Fresh feature is in.
+    assert merged.features["auth-rescanned"] == ["packages/auth/a.ts"]
+    # Clean ui carried with description + flows.
+    assert merged.features["ui"] == ["packages/ui/c.tsx"]
+    assert merged.descriptions["ui"] == "UI desc"
+
+
+def test_merge_drops_features_emptied_by_deletions():
+    prior_result = DeepScanResult()
+    prior_result.features["legacy"] = ["packages/old/x.ts"]
+    prior = PriorScan(
+        result=prior_result, last_sha="abc",
+        feature_stats={}, flow_stats={}, scan_meta={},
+    )
+    fresh = DeepScanResult()
+    clean_pkg = WorkspacePackage(
+        name="old", path="packages/old", files=["packages/old/x.ts"],
+    )
+    merged = _merge_carry_with_fresh(
+        prior=prior, fresh=fresh,
+        clean_packages=[clean_pkg],
+        deleted_files={"packages/old/x.ts"},
+    )
+    assert "legacy" not in merged.features
+
+
+def test_execute_workspace_incremental_no_stale_returns_prior():
+    """When no packages are stale, execute_workspace_incremental
+    short-circuits and returns the prior scan unchanged — no LLM
+    call. Same outcome as the no-op path in plan_incremental but
+    with the workspace-level lens."""
+    prior_result = DeepScanResult()
+    prior_result.features["auth"] = ["packages/auth/a.ts"]
+    prior = PriorScan(
+        result=prior_result, last_sha="abc",
+        feature_stats={}, flow_stats={}, scan_meta={},
+    )
+    workspace = _ws({"auth": ["packages/auth/a.ts"]})
+    diff = GitDiff(base_sha="x", head_sha="y")  # no changes
+    plan = IncrementalPlan(stale_features=[], clean_features=["auth"])
+
+    out = execute_workspace_incremental(
+        plan=plan, prior=prior, diff=diff,
+        workspace=workspace, repo_root=".",
+        api_key=None, model=None,
+    )
+    assert out is prior.result

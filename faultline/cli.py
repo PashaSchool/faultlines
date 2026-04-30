@@ -382,6 +382,7 @@ def analyze(
             # subset re-scan; for now, only the no-op shortcut is
             # active. Failure here is silent — full scan continues.
             _incremental_short_circuit = None
+            _incremental_subset_inputs = None  # Stage 4 subset rescan
             if incremental:
                 try:
                     from faultline.analyzer.git_diff import compute_git_diff
@@ -408,6 +409,34 @@ def analyze(
                         and not _plan.fallback_full_scan
                     ):
                         _incremental_short_circuit = _prior.result
+                    elif (
+                        _prior is not None
+                        and not _plan.fallback_full_scan
+                        and workspace.detected
+                        and len(workspace.packages) >= 2
+                    ):
+                        # Stage 4 path: workspace with stale packages.
+                        # Verify there's a clean+stale split worth doing.
+                        from faultline.llm.incremental import (
+                            identify_stale_packages,
+                        )
+                        _stale_pkgs, _clean_pkgs = identify_stale_packages(
+                            workspace, _diff,
+                        )
+                        if _stale_pkgs and _clean_pkgs:
+                            _incremental_subset_inputs = {
+                                "plan": _plan,
+                                "prior": _prior,
+                                "diff": _diff,
+                                "stale_count": len(_stale_pkgs),
+                                "clean_count": len(_clean_pkgs),
+                            }
+                            console.print(
+                                f"[blue]Incremental subset:[/blue] "
+                                f"re-scanning {len(_stale_pkgs)} stale "
+                                f"package(s); {len(_clean_pkgs)} clean "
+                                f"package(s) carried forward."
+                            )
                 except Exception as exc:  # noqa: BLE001 — opportunistic
                     console.print(
                         f"[yellow]⚠ Incremental pre-flight failed "
@@ -416,14 +445,48 @@ def analyze(
                     )
 
             _cost_tracker = CostTracker()
+            _need_full_scan = True
             if _incremental_short_circuit is not None:
                 _new_pipeline_result = _incremental_short_circuit
+                _need_full_scan = False
                 console.print(
                     "[green]✓[/green] Incremental no-op: "
                     f"{len(_new_pipeline_result.features)} features carried "
                     "forward, no LLM calls made."
                 )
-            else:
+            elif _incremental_subset_inputs is not None:
+                # Stage 4: partial re-scan of stale packages only.
+                from faultline.llm.incremental import (
+                    execute_workspace_incremental,
+                )
+                from faultline.llm.sonnet_scanner import build_commit_context
+                _commit_ctx = build_commit_context(commits)
+                try:
+                    _new_pipeline_result = execute_workspace_incremental(
+                        plan=_incremental_subset_inputs["plan"],
+                        prior=_incremental_subset_inputs["prior"],
+                        diff=_incremental_subset_inputs["diff"],
+                        workspace=workspace,
+                        repo_root=Path(repo_path),
+                        api_key=api_key,
+                        model=model,
+                        tracker=_cost_tracker,
+                        use_tools=tool_use,
+                        commit_context=_commit_ctx,
+                    )
+                    _need_full_scan = False
+                    console.print(
+                        f"[green]✓[/green] Incremental subset complete: "
+                        f"{len(_new_pipeline_result.features)} features total"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    console.print(
+                        f"[yellow]⚠ Subset re-scan failed "
+                        f"({type(exc).__name__}: {exc}) — falling back to "
+                        f"full scan.[/yellow]"
+                    )
+                    # _need_full_scan stays True → full pipeline runs below
+            if _need_full_scan:
                 console.print(
                     "[blue]Running new pipeline[/blue] "
                     "(pass [dim]--legacy[/dim] to use the 5-strategy fallback)"
