@@ -395,7 +395,7 @@ def trace_flow_callgraph(
                 )
                 if not matched:
                     continue
-                traced = TracedFlow(entry_file=matched[0])
+                traced = TracedFlow(entry_file=matched[0], entry_symbol=None)
                 for i, fpath in enumerate(matched):
                     traced.participants.append(TracedParticipant(
                         file=fpath, depth=1 if i > 0 else 0,
