@@ -172,6 +172,17 @@ def analyze(
         ),
         is_flag=True,
     ),
+    incremental: bool = typer.Option(
+        False,
+        "--incremental",
+        help=(
+            "Reuse the most recent saved scan for this repo as a baseline; "
+            "only re-analyze features whose files changed since that scan's "
+            "commit. No-op or full-fallback when no prior exists. Default OFF "
+            "— without this flag the scan behaves exactly as before."
+        ),
+        is_flag=True,
+    ),
     flows: bool = typer.Option(
         False,
         "--flows",
@@ -192,10 +203,12 @@ def analyze(
         False,
         "--push",
         help=(
-            "Upload the resulting feature map to the Faultlines SaaS dashboard. "
-            "Requires FAULTLINE_API_KEY env var. Silently no-op without one."
+            "[alpha] Upload the feature map to the Faultlines SaaS dashboard. "
+            "Cloud sync is not yet in public beta — set FAULTLINES_EXPERIMENTAL=1 "
+            "to enable."
         ),
         is_flag=True,
+        hidden=True,
     ),
     coverage: Optional[str] = typer.Option(
         None,
@@ -362,39 +375,87 @@ def analyze(
         if _use_new_pipeline:
             from faultline.llm.cost import CostTracker
             from faultline.llm.pipeline import run as _run_new_pipeline
-            console.print(
-                "[blue]Running new pipeline[/blue] "
-                "(pass [dim]--legacy[/dim] to use the 5-strategy fallback)"
-            )
+
+            # Incremental pre-flight: when ``--incremental`` is set,
+            # try to short-circuit the full pipeline by detecting a
+            # no-op diff against the prior scan. Stages 4-5 will add
+            # subset re-scan; for now, only the no-op shortcut is
+            # active. Failure here is silent — full scan continues.
+            _incremental_short_circuit = None
+            if incremental:
+                try:
+                    from faultline.analyzer.git_diff import compute_git_diff
+                    from faultline.llm.incremental import plan_incremental
+                    from faultline.llm.scan_loader import (
+                        find_prior_scan_for, load_scan_as_seed,
+                    )
+                    _prior_path = find_prior_scan_for(repo_path)
+                    _prior = (
+                        load_scan_as_seed(_prior_path)
+                        if _prior_path is not None else None
+                    )
+                    _diff = compute_git_diff(
+                        repo_path,
+                        _prior.last_sha if _prior is not None else None,
+                    )
+                    _plan = plan_incremental(_prior, _diff)
+                    console.print(
+                        f"[blue]Incremental:[/blue] {_plan.summary()}"
+                    )
+                    if (
+                        _prior is not None
+                        and _plan.is_no_op
+                        and not _plan.fallback_full_scan
+                    ):
+                        _incremental_short_circuit = _prior.result
+                except Exception as exc:  # noqa: BLE001 — opportunistic
+                    console.print(
+                        f"[yellow]⚠ Incremental pre-flight failed "
+                        f"({type(exc).__name__}: {exc}) — running full scan."
+                        f"[/yellow]"
+                    )
+
             _cost_tracker = CostTracker()
-            try:
-                _new_pipeline_result = _run_new_pipeline(
-                    analysis_files=analysis_files,
-                    workspace=workspace,
-                    repo_structure=repo_structure,
-                    signatures=signatures,
-                    commits=commits,
-                    api_key=api_key,
-                    model=model,
-                    tracker=_cost_tracker,
-                    use_tools=tool_use,
-                    repo_root=Path(repo_path),
-                    dedup=dedup,
-                    sub_decompose=sub_decompose,
-                    tool_flows=tool_flows,
-                    critique=critique,
-                    trace_flows=trace_flows,
-                )
-            except Exception as exc:  # pragma: no cover - surfacing guidance
+            if _incremental_short_circuit is not None:
+                _new_pipeline_result = _incremental_short_circuit
                 console.print(
-                    f"[red]⚠ New pipeline raised {type(exc).__name__}: {exc}[/red]"
+                    "[green]✓[/green] Incremental no-op: "
+                    f"{len(_new_pipeline_result.features)} features carried "
+                    "forward, no LLM calls made."
                 )
+            else:
                 console.print(
-                    "[red]   Falling through to LEGACY 5-strategy path — "
-                    "post-rewrite improvements (catchall split, flow dedup, "
-                    "CRUD enrichment, noise filter) will NOT apply to this scan.[/red]"
+                    "[blue]Running new pipeline[/blue] "
+                    "(pass [dim]--legacy[/dim] to use the 5-strategy fallback)"
                 )
-                _new_pipeline_result = None
+                try:
+                    _new_pipeline_result = _run_new_pipeline(
+                        analysis_files=analysis_files,
+                        workspace=workspace,
+                        repo_structure=repo_structure,
+                        signatures=signatures,
+                        commits=commits,
+                        api_key=api_key,
+                        model=model,
+                        tracker=_cost_tracker,
+                        use_tools=tool_use,
+                        repo_root=Path(repo_path),
+                        dedup=dedup,
+                        sub_decompose=sub_decompose,
+                        tool_flows=tool_flows,
+                        critique=critique,
+                        trace_flows=trace_flows,
+                    )
+                except Exception as exc:  # pragma: no cover - surfacing guidance
+                    console.print(
+                        f"[red]⚠ New pipeline raised {type(exc).__name__}: {exc}[/red]"
+                    )
+                    console.print(
+                        "[red]   Falling through to LEGACY 5-strategy path — "
+                        "post-rewrite improvements (catchall split, flow dedup, "
+                        "CRUD enrichment, noise filter) will NOT apply to this scan.[/red]"
+                    )
+                    _new_pipeline_result = None
 
             if _new_pipeline_result is None:
                 console.print(
@@ -882,10 +943,15 @@ def analyze(
             saved_path = write_feature_map(feature_map, output)
             console.print(f"[dim]Saved: {saved_path}[/dim]")
 
-        # 8b. Optional: push to SaaS dashboard
+        # 8b. Optional: push to SaaS dashboard (alpha — experimental only)
         if push:
             import os as _os
-            if not _os.environ.get("FAULTLINE_API_KEY"):
+            if not _os.environ.get("FAULTLINES_EXPERIMENTAL"):
+                console.print(
+                    "[yellow]--push is alpha and not yet available in public beta.[/yellow]\n"
+                    "[dim]Set FAULTLINES_EXPERIMENTAL=1 to opt in once the cloud dashboard launches.[/dim]"
+                )
+            elif not _os.environ.get("FAULTLINE_API_KEY"):
                 console.print(
                     "[yellow]--push set but FAULTLINE_API_KEY is empty — skipping cloud upload.[/yellow]"
                 )
@@ -937,6 +1003,19 @@ def _inject_new_pipeline_descriptions(
     """
     if not descriptions:
         return
+    # Build a quick lookup. Exact match is the only safe rule: the new
+    # pipeline writes descriptions keyed by the same feature name that
+    # survives into ``feature_map.features``. Sprint 2 surfaced two
+    # ways the previous fuzzy matcher leaked descriptions across
+    # unrelated features:
+    #   - Substring-in containment ("ai" found in "auth-emails", "types"
+    #     found in "typescript").
+    #   - Path-segment match: a feat "web/surveys" (web package's survey
+    #     code) inherited the description of the "surveys" package
+    #     because both ended in "surveys" after a slash split.
+    # Singular/plural is preserved as a last resort because it's
+    # bounded — it can only match within one identifier, not across
+    # path segments.
     for feat in feature_map.features:
         if feat.description:
             continue
@@ -945,11 +1024,8 @@ def _inject_new_pipeline_descriptions(
             continue
         # Bounded singular/plural fallback — only fires when the two
         # names differ ONLY by a trailing 's', no slashes involved on
-        # either side. Anything broader (substring containment,
-        # path-segment match) was demonstrated to leak descriptions
-        # across unrelated features once dedup introduced longer
-        # multi-word names ('ai' inheriting 'email/auth-emails',
-        # 'web/surveys' inheriting the 'surveys' package).
+        # either side. Anything broader (path-segment, substring) has
+        # been shown to leak descriptions across unrelated features.
         if "/" not in feat.name:
             feat_stem = feat.name.rstrip("s")
             for desc_name, desc in descriptions.items():
@@ -2153,7 +2229,7 @@ def watch_stop(
         console.print("[yellow]No watcher running[/yellow]")
 
 
-@app.command()
+@app.command(hidden=True)
 def pull(
     repo: Optional[str] = typer.Argument(
         None,
@@ -2182,6 +2258,13 @@ def pull(
         repo = Path.cwd().name
     slug = re.sub(r"[^a-z0-9]+", "-", repo.lower())[:60]
 
+    if not os.environ.get("FAULTLINES_EXPERIMENTAL"):
+        rprint(
+            "[yellow]`pull` is alpha and not yet available in public beta.[/yellow]\n"
+            "[dim]Set FAULTLINES_EXPERIMENTAL=1 to opt in once the cloud dashboard launches.[/dim]"
+        )
+        raise typer.Exit(code=1)
+
     if not os.environ.get("FAULTLINE_API_KEY"):
         rprint("[red]FAULTLINE_API_KEY not set.[/red] Create a key at your dashboard → Settings → API keys.")
         raise typer.Exit(code=1)
@@ -2189,7 +2272,7 @@ def pull(
     rprint(f"Pulling latest scan for [bold]{slug}[/bold]…")
     data = pull_feature_map(slug)
     if data is None:
-        rprint(f"[yellow]No scan found for '{slug}'.[/yellow] Run `faultlines analyze . --push` first.")
+        rprint(f"[yellow]No scan found for '{slug}'.[/yellow]")
         raise typer.Exit(code=1)
 
     target = output or (Path.home() / ".faultline" / f"feature-map-{slug}-cloud.json")
