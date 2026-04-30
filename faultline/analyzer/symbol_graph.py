@@ -101,6 +101,8 @@ _TS_JS_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 _PY_EXTENSIONS: frozenset[str] = frozenset({".py"})
+_GO_EXTENSIONS: frozenset[str] = frozenset({".go"})
+_RS_EXTENSIONS: frozenset[str] = frozenset({".rs"})
 
 # ``from .module import X`` / ``from ..parent import X`` / ``from a.b import X``
 _RE_PY_FROM_IMPORT = re.compile(
@@ -211,6 +213,204 @@ def _try_resolve_parts(parts: list[str], file_set: set[str]) -> str | None:
     if cand_init in file_set:
         return cand_init
     return None
+
+
+# ── Go imports (P6a) ────────────────────────────────────────────
+
+
+_RE_GO_SINGLE_IMPORT = re.compile(
+    r'^[ \t]*import[ \t]+(?:[\w.]+[ \t]+)?"(?P<path>[^"]+)"',
+    re.MULTILINE,
+)
+_RE_GO_BLOCK_IMPORT = re.compile(
+    r"^[ \t]*import[ \t]*\(\s*(?P<body>[^)]*)\)",
+    re.MULTILINE | re.DOTALL,
+)
+_RE_GO_BLOCK_LINE = re.compile(
+    r'^\s*(?:[\w.]+\s+)?"(?P<path>[^"]+)"',
+    re.MULTILINE,
+)
+
+
+def _go_module_path(repo_root: str | Path) -> str | None:
+    """Read ``go.mod`` and return the declared module path."""
+    p = Path(repo_root) / "go.mod"
+    if not p.is_file():
+        return None
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("module "):
+                return line.split(None, 1)[1].strip()
+    except OSError:
+        return None
+    return None
+
+
+def _extract_go_imports(source: str) -> set[str]:
+    """Parse a Go source file → set of import paths."""
+    out: set[str] = set()
+    for m in _RE_GO_SINGLE_IMPORT.finditer(source):
+        out.add(m.group("path"))
+    for block in _RE_GO_BLOCK_IMPORT.finditer(source):
+        for m in _RE_GO_BLOCK_LINE.finditer(block.group("body")):
+            out.add(m.group("path"))
+    return out
+
+
+def _resolve_go_module(
+    module_path: str,
+    file_set: set[str],
+    repo_module: str | None,
+) -> str | None:
+    """Resolve a Go import to a representative ``.go`` file in the repo.
+
+    Go's "one package per dir" rule means we pick any non-test
+    ``.go`` file inside the matching directory — BFS will treat
+    that as the package entry point.
+    """
+    if not repo_module:
+        return None
+    if module_path == repo_module:
+        return _first_go_file_in_dir("", file_set)
+    if module_path.startswith(repo_module + "/"):
+        rel = module_path[len(repo_module) + 1:]
+        return _first_go_file_in_dir(rel, file_set)
+    return None
+
+
+def _first_go_file_in_dir(
+    rel_dir: str, file_set: set[str],
+) -> str | None:
+    """Return any non-test ``.go`` file directly in ``rel_dir``."""
+    prefix = (rel_dir.rstrip("/") + "/") if rel_dir else ""
+    for f in sorted(file_set):
+        if not f.startswith(prefix):
+            continue
+        rest = f[len(prefix):]
+        if "/" in rest:
+            continue
+        if f.endswith(".go") and not f.endswith("_test.go"):
+            return f
+    return None
+
+
+# ── Rust imports (P6b) ──────────────────────────────────────────
+
+
+# ``use crate::auth::Login;`` / ``use crate::auth::*;`` — intra-crate
+# ``use super::sibling::Foo;`` / ``use self::nested::Bar;``
+# ``mod foo;`` — declares a child module (resolve to foo.rs or foo/mod.rs)
+_RE_RS_USE = re.compile(
+    r"^\s*(?:pub\s+)?use[ \t]+"
+    r"(?P<full>(?:crate|super|self)(?:::(?:\w+|\*|\{[^}]*\}))+)\s*;",
+    re.MULTILINE,
+)
+_RE_RS_MOD = re.compile(
+    r"^\s*(?:pub\s+)?mod[ \t]+(?P<name>\w+)\s*;",
+    re.MULTILINE,
+)
+
+
+def _extract_rs_imports(source: str) -> set[str]:
+    """Parse Rust source → set of intra-crate MODULE paths.
+
+    For ``use crate::auth::login::Handler;`` the captured ``full`` is
+    ``crate::auth::login::Handler`` — we strip the trailing element
+    (the imported symbol) to keep just the module path
+    ``crate::auth::login``. Glob (``::*``) and brace (``::{...}``)
+    forms have NO trailing symbol; the path is what's before them.
+
+    Third-party crate imports (``use serde::Deserialize``) don't
+    start with ``crate``/``super``/``self`` so the regex never
+    matches.
+    """
+    out: set[str] = set()
+    for m in _RE_RS_USE.finditer(source):
+        full = m.group("full")
+        # ``full`` looks like ``crate::a::b::FINAL`` where FINAL is
+        # either a symbol name, ``*``, or ``{...}``. Drop the FINAL
+        # segment — what's left is the module path.
+        # Find the last ``::`` and strip everything from there.
+        idx = full.rfind("::")
+        if idx == -1:
+            continue
+        module = full[:idx]
+        if module:
+            out.add(module)
+    return out
+
+
+def _extract_rs_mods(source: str) -> set[str]:
+    """Parse ``mod foo;`` declarations — these declare a child module
+    of the current file."""
+    return {m.group("name") for m in _RE_RS_MOD.finditer(source)}
+
+
+def _resolve_rs_use(
+    importer_file: str,
+    use_path: str,
+    file_set: set[str],
+    crate_root: str,
+) -> str | None:
+    """Resolve a Rust ``use`` path to a file in the crate.
+
+    Args:
+        importer_file: e.g. ``src/auth/login.rs``
+        use_path: e.g. ``crate::api::handler``
+        crate_root: e.g. ``src`` (where ``lib.rs`` / ``main.rs`` lives)
+    """
+    parts = use_path.split("::")
+    if not parts:
+        return None
+    head = parts[0]
+    rest = parts[1:]
+
+    if head == "crate":
+        # Walk from crate_root.
+        base_parts = [crate_root] if crate_root else []
+    elif head == "super":
+        # One dir up from importer.
+        importer_parts = importer_file.split("/")
+        # Drop file basename + one parent.
+        if len(importer_parts) < 2:
+            return None
+        base_parts = importer_parts[:-2]
+    elif head == "self":
+        # Same dir as importer.
+        importer_parts = importer_file.split("/")
+        base_parts = importer_parts[:-1]
+    else:
+        return None
+
+    # Drop the trailing element — Rust ``use crate::a::b::Foo`` imports
+    # a SYMBOL ``Foo`` from MODULE ``crate::a::b``. We resolve to the
+    # module file.
+    module_parts = rest[:-1] if rest else []
+    return _try_resolve_rs_parts(base_parts + module_parts, file_set)
+
+
+def _try_resolve_rs_parts(
+    parts: list[str], file_set: set[str],
+) -> str | None:
+    """``a/b/c.rs`` or ``a/b/c/mod.rs`` shaped lookup."""
+    if not parts:
+        return None
+    base = "/".join(parts)
+    cand_file = f"{base}.rs"
+    cand_mod = f"{base}/mod.rs"
+    if cand_file in file_set:
+        return cand_file
+    if cand_mod in file_set:
+        return cand_mod
+    return None
+
+
+def _detect_rust_crate_root(file_set: set[str]) -> str:
+    """Find ``src`` if it exists; otherwise empty string (root layout)."""
+    if any(f.startswith("src/") for f in file_set):
+        return "src"
+    return ""
 
 
 # ── Data shapes ─────────────────────────────────────────────────────
@@ -356,6 +556,72 @@ def build_symbol_graph(
             for e in edges:
                 graph.reverse.setdefault(e.target_file, []).append(
                     ImportEdge(target_file=path, target_symbol=e.target_symbol)
+                )
+
+    # Walk Go imports — same edge shape, "@import" symbol since Go
+    # imports a package not a specific symbol.
+    repo_module = _go_module_path(repo_root)
+    if repo_module:
+        for path in source_files:
+            if Path(path).suffix.lower() not in _GO_EXTENSIONS:
+                continue
+            source = _read_safe(repo_root, path)
+            if not source:
+                continue
+            for module_path in _extract_go_imports(source):
+                target = _resolve_go_module(module_path, file_set, repo_module)
+                if not target or target == path:
+                    continue
+                edge = ImportEdge(target_file=target, target_symbol="@import")
+                graph.forward.setdefault(path, []).append(edge)
+                graph.reverse.setdefault(target, []).append(
+                    ImportEdge(target_file=path, target_symbol="@import")
+                )
+
+    # Walk Rust ``use`` statements + ``mod`` declarations.
+    rs_files = [f for f in source_files if Path(f).suffix.lower() in _RS_EXTENSIONS]
+    if rs_files:
+        crate_root = _detect_rust_crate_root(file_set)
+        for path in rs_files:
+            source = _read_safe(repo_root, path)
+            if not source:
+                continue
+            uses = _extract_rs_imports(source)
+            mods = _extract_rs_mods(source)
+            edges: list[ImportEdge] = []
+            for use_path in uses:
+                target = _resolve_rs_use(path, use_path, file_set, crate_root)
+                if target and target != path:
+                    edges.append(ImportEdge(
+                        target_file=target, target_symbol="@import",
+                    ))
+            # ``mod foo;`` declares child module → either ``foo.rs``
+            # in the same dir or ``foo/mod.rs``.
+            importer_dir = str(Path(path).parent).replace("\\", "/")
+            if importer_dir == ".":
+                importer_dir = ""
+            for mod_name in mods:
+                cand_file = (
+                    f"{importer_dir}/{mod_name}.rs"
+                    if importer_dir else f"{mod_name}.rs"
+                )
+                cand_mod = (
+                    f"{importer_dir}/{mod_name}/mod.rs"
+                    if importer_dir else f"{mod_name}/mod.rs"
+                )
+                target = (
+                    cand_file if cand_file in file_set
+                    else cand_mod if cand_mod in file_set
+                    else None
+                )
+                if target and target != path:
+                    edges.append(ImportEdge(
+                        target_file=target, target_symbol="@import",
+                    ))
+            for e in edges:
+                graph.forward.setdefault(path, []).append(e)
+                graph.reverse.setdefault(e.target_file, []).append(
+                    ImportEdge(target_file=path, target_symbol="@import")
                 )
 
     # Walk imports per file and resolve them.
