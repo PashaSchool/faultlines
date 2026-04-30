@@ -1186,6 +1186,38 @@ def _split_entry_trail(desc: str | None) -> tuple[str | None, str | None, int | 
     return cleaned, file_part, line_part
 
 
+def _flow_specific_stats(
+    flow_paths: set[str],
+    feat_commits,
+    feat_health_fn,
+):
+    """Compute per-flow git stats from a participant-file subset.
+
+    Returns ``(total_commits, bug_fixes, bug_fix_ratio, last_modified,
+    authors, health_score)`` based ONLY on commits that touch at
+    least one file in ``flow_paths``. When the participant set is
+    empty falls back to the parent feature's commits (caller should
+    not call this with empty paths but defended for safety).
+    """
+    if not flow_paths:
+        return None
+    touching = [
+        c for c in feat_commits
+        if any(f in flow_paths for f in c.files_changed)
+    ]
+    total = len(touching)
+    bugs = sum(1 for c in touching if c.is_bug_fix)
+    ratio = (bugs / total) if total else 0.0
+    last_mod = None
+    authors_set: set[str] = set()
+    for c in touching:
+        authors_set.add(c.author)
+        if last_mod is None or c.date > last_mod:
+            last_mod = c.date
+    health = feat_health_fn(ratio, total, touching)
+    return total, bugs, ratio, last_mod, sorted(authors_set), health
+
+
 def _inject_new_pipeline_flows(
     feature_map,
     flows: dict[str, list[str]],
@@ -1216,9 +1248,11 @@ def _inject_new_pipeline_flows(
     """
     if not flows:
         return
+    from faultline.analyzer.features import _calculate_health
     from faultline.models.types import Flow, FlowParticipant
 
     fp_map = flow_participants or {}
+    dropped_hallucinated = 0
 
     for feat in feature_map.features:
         new_flow_names = flows.get(feat.name) or []
@@ -1226,6 +1260,14 @@ def _inject_new_pipeline_flows(
             continue
         per_flow_descs = flow_descriptions.get(feat.name) or {}
         per_flow_traces = fp_map.get(feat.name) or {}
+        # Pre-filter the parent feature's commits once — every flow
+        # under this feature will only need to consider this subset
+        # when computing its own stats.
+        feat_path_set = set(feat.paths)
+        feat_commits = [
+            c for c in commits
+            if any(f in feat_path_set for f in c.files_changed)
+        ]
         new_flows: list[Flow] = []
         for name in new_flow_names:
             clean_desc, entry_file, entry_line = _split_entry_trail(
@@ -1240,21 +1282,66 @@ def _inject_new_pipeline_flows(
                     side_effect_only=tp.side_effect_only,
                     symbols=list(tp.symbols),
                 ))
+
+            # P3: drop hallucinated flows. A flow with 0 participants
+            # AND no entry_point recorded by Sonnet got NO file
+            # attribution from any path: BFS yielded nothing,
+            # directory-neighbor fallback yielded nothing, keyword
+            # backfill yielded nothing. The flow name was generated
+            # without grounding in real code. Keep flows whose
+            # entry_point WAS recorded (they're real, just untraced)
+            # — those still surface a meaningful "this is where it
+            # starts" line in the dashboard.
+            if not participants and entry_file is None:
+                dropped_hallucinated += 1
+                continue
+
+            # P2: compute per-flow git stats from participant files
+            # when the trace produced ≥2 unique participants. Fewer
+            # than 2 = trace was too shallow to differentiate this
+            # flow from its siblings, so inherit feature stats
+            # (matches prior behavior — no regression).
+            unique_paths = {p.path for p in participants if p.path}
+            stats = None
+            if len(unique_paths) >= 2:
+                stats = _flow_specific_stats(
+                    unique_paths, feat_commits, _calculate_health,
+                )
+            if stats is not None:
+                total, bugs, ratio, last_mod, authors, health = stats
+                flow_paths = sorted(unique_paths)
+            else:
+                total = feat.total_commits
+                bugs = feat.bug_fixes
+                ratio = feat.bug_fix_ratio
+                last_mod = feat.last_modified
+                authors = list(feat.authors)
+                health = feat.health_score
+                flow_paths = list(feat.paths)
+
             new_flows.append(Flow(
                 name=name,
                 description=clean_desc,
                 entry_point_file=entry_file,
                 entry_point_line=entry_line,
-                paths=list(feat.paths),
-                authors=list(feat.authors),
-                total_commits=feat.total_commits,
-                bug_fixes=feat.bug_fixes,
-                bug_fix_ratio=feat.bug_fix_ratio,
-                last_modified=feat.last_modified,
-                health_score=feat.health_score,
+                paths=flow_paths,
+                authors=authors,
+                total_commits=total,
+                bug_fixes=bugs,
+                bug_fix_ratio=ratio,
+                last_modified=last_mod,
+                health_score=health,
                 participants=participants,
             ))
         feat.flows = new_flows
+
+    if dropped_hallucinated:
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "_inject_new_pipeline_flows: dropped %d hallucinated flow(s) "
+            "(no entry_point + no participants)",
+            dropped_hallucinated,
+        )
 
 
 def _strip_src_prefix(

@@ -100,6 +100,118 @@ _TS_JS_EXTENSIONS: frozenset[str] = frozenset({
     ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
 })
 
+_PY_EXTENSIONS: frozenset[str] = frozenset({".py"})
+
+# ``from .module import X`` / ``from ..parent import X`` / ``from a.b import X``
+_RE_PY_FROM_IMPORT = re.compile(
+    r"^[ \t]*from[ \t]+(?P<mod>\.+|[\w.]+(?:\.\w+)*)[ \t]+import[ \t]+"
+    r"(?P<names>\([^)]*\)|[^\n#]+)",
+    re.MULTILINE,
+)
+# ``import package.sub`` / ``import package.sub as alias``
+_RE_PY_BARE_IMPORT = re.compile(
+    r"^[ \t]*import[ \t]+(?P<mod>[\w.]+(?:\.\w+)*)(?:[ \t]+as[ \t]+\w+)?",
+    re.MULTILINE,
+)
+
+
+def _extract_py_imports(source: str) -> dict[str, set[str]]:
+    """Parse Python source → ``{module: {symbol_or_'*'_or_'@import'}}``.
+
+    Conventions used to mirror the TS/JS shape downstream BFS expects:
+      - Specific names (``from x import a, b``) → set of names
+      - Bare ``import x`` → ``{"@import"}`` (side-effect-equivalent;
+        we know the file participates but no symbol attribution).
+      - ``from x import *`` → ``{"*"}`` (namespace).
+    """
+    out: dict[str, set[str]] = {}
+    for m in _RE_PY_FROM_IMPORT.finditer(source):
+        mod = m.group("mod")
+        names_raw = m.group("names").replace("(", "").replace(")", "")
+        names: set[str] = set()
+        for tok in names_raw.split(","):
+            t = tok.strip().split(" as ")[0].strip()
+            if not t:
+                continue
+            if t == "*":
+                names.add("*")
+            else:
+                names.add(t)
+        if names:
+            out.setdefault(mod, set()).update(names)
+    for m in _RE_PY_BARE_IMPORT.finditer(source):
+        mod = m.group("mod")
+        out.setdefault(mod, set()).add("@import")
+    return out
+
+
+def _resolve_py_module(
+    importer_file: str,
+    module: str,
+    file_set: set[str],
+) -> str | None:
+    """Resolve a Python import target to a repo-relative file path.
+
+    Handles three cases:
+      1. Relative imports (``.foo``, ``..bar.baz``) — counted dots
+         walk the importer's directory tree.
+      2. Absolute intra-repo imports (``apps.api.foo``) — try every
+         common package-root prefix and look for matching .py.
+      3. ``from . import x`` (lone dot) — module is in the same dir
+         as importer.
+
+    Returns ``None`` for stdlib / third-party / unresolvable imports.
+    The BFS tolerates this — only resolved edges contribute.
+    """
+    importer_dir = str(Path(importer_file).parent).replace("\\", "/")
+    if importer_dir == ".":
+        importer_dir = ""
+
+    # Relative ``.``, ``..`` etc.
+    if module.startswith("."):
+        # Count leading dots — N dots = N-1 levels up.
+        dots = len(module) - len(module.lstrip("."))
+        rest = module[dots:]
+        # Walk up dots-1 levels from importer_dir.
+        parts = importer_dir.split("/") if importer_dir else []
+        if dots - 1 > len(parts):
+            return None
+        base_parts = parts[: len(parts) - (dots - 1)] if dots > 1 else parts
+        rest_parts = rest.split(".") if rest else []
+        candidate_parts = base_parts + rest_parts
+        return _try_resolve_parts(candidate_parts, file_set)
+
+    # Absolute. Try matching against the file_set as-is, plus every
+    # common src/apps prefix.
+    parts = module.split(".")
+    direct = _try_resolve_parts(parts, file_set)
+    if direct:
+        return direct
+    # Common monorepo prefixes — try each.
+    for prefix in ("apps", "src", "lib", "packages"):
+        cand = _try_resolve_parts([prefix] + parts, file_set)
+        if cand:
+            return cand
+    return None
+
+
+def _try_resolve_parts(parts: list[str], file_set: set[str]) -> str | None:
+    """Given path parts, look for ``parts.py`` or ``parts/__init__.py``.
+
+    Both shapes are valid Python module locations. Returns the
+    matching file from ``file_set`` if either exists.
+    """
+    if not parts:
+        return None
+    base = "/".join(parts)
+    cand_file = f"{base}.py"
+    cand_init = f"{base}/__init__.py"
+    if cand_file in file_set:
+        return cand_file
+    if cand_init in file_set:
+        return cand_init
+    return None
+
 
 # ── Data shapes ─────────────────────────────────────────────────────
 
@@ -218,6 +330,33 @@ def build_symbol_graph(
                 ))
         if per_file:
             graph.exports[path] = per_file
+
+    # Walk Python imports first — same edge shape as TS/JS so BFS
+    # treats them uniformly. Skip files whose source we already
+    # parsed via signatures.
+    for path in source_files:
+        suffix = Path(path).suffix.lower()
+        if suffix not in _PY_EXTENSIONS:
+            continue
+        source = _read_safe(repo_root, path)
+        if not source:
+            continue
+        per_module = _extract_py_imports(source)
+        edges: list[ImportEdge] = []
+        for module, symbols in per_module.items():
+            target = _resolve_py_module(path, module, file_set)
+            if not target:
+                continue
+            for sym in symbols:
+                edges.append(ImportEdge(
+                    target_file=target, target_symbol=sym,
+                ))
+        if edges:
+            graph.forward.setdefault(path, []).extend(edges)
+            for e in edges:
+                graph.reverse.setdefault(e.target_file, []).append(
+                    ImportEdge(target_file=path, target_symbol=e.target_symbol)
+                )
 
     # Walk imports per file and resolve them.
     for path in source_files:
