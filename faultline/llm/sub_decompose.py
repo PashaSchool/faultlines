@@ -326,16 +326,31 @@ def sub_decompose_oversized(
     # cross-run feature-name stability.
     locked: frozenset[str] = locked_names or frozenset()
 
-    # Catch-all suffixes that almost always indicate a leftover bucket
-    # rather than a real feature. Trigger sub-decompose at a much lower
-    # threshold (50 files) so an aggressive ``web/shell`` 680-file
-    # bucket gets split into proper sub-features instead of riding
-    # along under the default ``threshold`` budget.
-    catchall_suffixes = (
-        "/shell", "/core", "/common", "/main", "/app", "/misc",
-        "/utils", "/lib", "/base", "/general", "/leftover", "/residual",
-    )
+    # Shape-based catch-all detection (no folder-name allowlist).
+    # A feature is a "catch-all" candidate when its file set is
+    # incoherent — files span many top-level subdirectories with
+    # no dominant theme. Such features are typically Sonnet's
+    # leftover / residual bucket and benefit from aggressive
+    # re-splitting at a lower threshold.
     catchall_threshold = max(50, MIN_DYNAMIC_THRESHOLD)
+
+    def _is_catchall(name: str, files: list[str]) -> bool:
+        if len(files) < catchall_threshold:
+            return False
+        # Top-level dir spread: how many distinct first-segments
+        # appear in the file paths.
+        top_dirs: dict[str, int] = {}
+        for f in files:
+            seg = f.split("/", 1)[0] if "/" in f else "<root>"
+            top_dirs[seg] = top_dirs.get(seg, 0) + 1
+        # No single top-dir owns ≥60% of files → spread is too wide
+        # for a coherent feature. Plus at least 5 distinct dirs in
+        # play. Heuristic empirically aligned with what humans call
+        # "catch-all" on documenso/cal.com/superset.
+        if len(top_dirs) < 5:
+            return False
+        max_share = max(top_dirs.values()) / max(len(files), 1)
+        return max_share < 0.60
 
     # Snapshot keys so we can mutate ``result.features`` while iterating.
     candidates = []
@@ -343,8 +358,11 @@ def sub_decompose_oversized(
     for name, files in result.features.items():
         if name in _PROTECTED_NAMES:
             continue
-        is_catchall = any(name.endswith(suf) for suf in catchall_suffixes)
-        size_floor = catchall_threshold if is_catchall else effective_threshold
+        size_floor = (
+            catchall_threshold
+            if _is_catchall(name, files)
+            else effective_threshold
+        )
         if len(files) <= size_floor:
             continue
         if name in locked:
