@@ -194,22 +194,47 @@ def _parse_python_file(rel_path: str, source: str) -> FileSignature:
     sig = FileSignature(path=rel_path)
     seen: set[str] = set()
 
+    # Collect (start_line, name, kind) for symbol-range computation.
+    # Used by P7 — flow_tracer attaches these ranges to participants
+    # so the dashboard can show "Create Project flow exercises
+    # ProjectView.post() lines 23-45" instead of "lines 1-1".
+    raw_symbols: list[tuple[int, str, str]] = []
+
     for match in _RE_PYTHON_CLASS.finditer(source):
         name = match.group(1)
         if name not in seen:
             seen.add(name)
             sig.exports.append(name)
+            line = source.count("\n", 0, match.start()) + 1
+            raw_symbols.append((line, name, "class"))
 
     for match in _RE_PYTHON_FUNC.finditer(source):
         name = match.group(1)
         if name not in seen:
             seen.add(name)
             sig.exports.append(name)
+            line = source.count("\n", 0, match.start()) + 1
+            raw_symbols.append((line, name, "function"))
 
     for match in _RE_PYTHON_ROUTE.finditer(source):
         method = match.group(1).upper()
         path = match.group(2)
         sig.routes.append(f"{method} {path}")
+
+    # Compute line ranges. Each symbol's end_line = (next symbol's
+    # start_line - 1) — same heuristic as the TS extractor. EOF for
+    # the last one. Sort by start_line first so ordering is correct.
+    raw_symbols.sort(key=lambda x: x[0])
+    total_lines = source.count("\n") + 1
+    for i, (start, name, kind) in enumerate(raw_symbols):
+        end = (
+            raw_symbols[i + 1][0] - 1
+            if i + 1 < len(raw_symbols) else total_lines
+        )
+        sig.symbol_ranges.append(SymbolRange(
+            name=name, start_line=start, end_line=max(start, end),
+            kind=kind,
+        ))
 
     return sig
 

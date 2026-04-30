@@ -16,36 +16,36 @@ from faultline.analyzer.symbol_graph import (
 
 def test_extract_use_crate_path():
     src = "use crate::auth::login::Handler;\n"
-    assert _extract_rs_imports(src) == {"crate::auth::login"}
+    assert _extract_rs_imports(src) == {"crate::auth::login": {"Handler"}}
 
 
 def test_extract_use_with_glob():
     src = "use crate::handlers::*;\n"
-    assert _extract_rs_imports(src) == {"crate::handlers"}
+    assert _extract_rs_imports(src) == {"crate::handlers": {"*"}}
 
 
 def test_extract_use_with_braces():
     src = "use crate::api::{post, get, put};\n"
-    assert _extract_rs_imports(src) == {"crate::api"}
+    assert _extract_rs_imports(src) == {"crate::api": {"post", "get", "put"}}
 
 
 def test_extract_use_super_self():
     src = "use super::sibling::Foo;\nuse self::nested::Bar;\n"
     out = _extract_rs_imports(src)
-    assert "super::sibling" in out
-    assert "self::nested" in out
+    assert out["super::sibling"] == {"Foo"}
+    assert out["self::nested"] == {"Bar"}
 
 
 def test_extract_pub_use():
     src = "pub use crate::types::User;\n"
-    assert _extract_rs_imports(src) == {"crate::types"}
+    assert _extract_rs_imports(src) == {"crate::types": {"User"}}
 
 
 def test_extract_ignores_external_crates():
     src = "use serde::Deserialize;\nuse tokio::runtime::Runtime;\n"
     # External crates have no ``crate``/``super``/``self`` prefix, so
     # the regex (which anchors to those) returns nothing.
-    assert _extract_rs_imports(src) == set()
+    assert _extract_rs_imports(src) == {}
 
 
 def test_extract_mod_declarations():

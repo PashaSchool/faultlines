@@ -102,6 +102,53 @@ def test_resolve_subdir_under_module():
     assert target in {"binding/binding.go", "binding/json.go"}
 
 
+def test_extract_imports_with_aliases():
+    from faultline.analyzer.symbol_graph import (
+        _extract_go_imports_with_aliases,
+    )
+    src = (
+        'package main\n'
+        'import (\n'
+        '    "fmt"\n'
+        '    j "encoding/json"\n'
+        '    _ "github.com/myapp/init"\n'
+        '    "github.com/myapp/handlers"\n'
+        ')\n'
+    )
+    out = _extract_go_imports_with_aliases(src)
+    assert out["fmt"] == "fmt"  # default = last segment
+    assert out["encoding/json"] == "j"  # explicit alias
+    assert out["github.com/myapp/init"] == "_"  # side-effect
+    assert out["github.com/myapp/handlers"] == "handlers"
+
+
+def test_extract_call_sites_finds_used_symbols():
+    from faultline.analyzer.symbol_graph import _extract_go_call_sites
+    src = (
+        'h := handlers.NewHandler()\n'
+        'handlers.Run()\n'
+        'handlers.Shutdown()\n'
+        'fmt.Println("hello")\n'
+        'user.Name = "x"\n'  # struct field — alias not in import map
+    )
+    alias_to_path = {"handlers": "github.com/myapp/handlers"}
+    calls = _extract_go_call_sites(src, alias_to_path)
+    assert calls == {
+        "github.com/myapp/handlers": {"NewHandler", "Run", "Shutdown"},
+    }
+
+
+def test_call_sites_skip_unexported_symbols():
+    """Lowercase symbols (Go's unexported) are ignored — they can't
+    be referenced from another package by definition."""
+    from faultline.analyzer.symbol_graph import _extract_go_call_sites
+    src = "handlers.run()\nhandlers.private()\nhandlers.Public()\n"
+    alias_to_path = {"handlers": "github.com/myapp/handlers"}
+    calls = _extract_go_call_sites(src, alias_to_path)
+    # Only ``Public`` (capitalized) is detected.
+    assert calls == {"github.com/myapp/handlers": {"Public"}}
+
+
 def test_first_go_file_skips_test_files():
     files = {"foo_test.go", "foo.go"}
     assert _first_go_file_in_dir("", files) == "foo.go"

@@ -219,7 +219,7 @@ def _try_resolve_parts(parts: list[str], file_set: set[str]) -> str | None:
 
 
 _RE_GO_SINGLE_IMPORT = re.compile(
-    r'^[ \t]*import[ \t]+(?:[\w.]+[ \t]+)?"(?P<path>[^"]+)"',
+    r'^[ \t]*import[ \t]+(?:(?P<alias>[\w.]+)[ \t]+)?"(?P<path>[^"]+)"',
     re.MULTILINE,
 )
 _RE_GO_BLOCK_IMPORT = re.compile(
@@ -227,8 +227,13 @@ _RE_GO_BLOCK_IMPORT = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _RE_GO_BLOCK_LINE = re.compile(
-    r'^\s*(?:[\w.]+\s+)?"(?P<path>[^"]+)"',
+    r'^\s*(?P<alias>[\w.]+\s+)?"(?P<path>[^"]+)"',
     re.MULTILINE,
+)
+# ``pkg.FuncName(`` — call site that references an imported pkg.
+# Word-boundary-anchored to avoid hits inside strings / comments.
+_RE_GO_CALL_SITE = re.compile(
+    r"\b(?P<pkg>\w+)\.(?P<sym>[A-Z]\w*)\s*[(\.]"
 )
 
 
@@ -255,6 +260,51 @@ def _extract_go_imports(source: str) -> set[str]:
     for block in _RE_GO_BLOCK_IMPORT.finditer(source):
         for m in _RE_GO_BLOCK_LINE.finditer(block.group("body")):
             out.add(m.group("path"))
+    return out
+
+
+def _extract_go_imports_with_aliases(
+    source: str,
+) -> dict[str, str]:
+    """Like ``_extract_go_imports`` but returns ``{import_path: alias}``.
+
+    The alias is what the importer uses to reference the package
+    (e.g. ``import j "encoding/json"`` → alias ``j``). Default
+    alias is the last segment of the import path, matching Go's
+    implicit naming rule. Side-effect imports (``_ "x"``) yield
+    alias ``_``.
+    """
+    out: dict[str, str] = {}
+    for m in _RE_GO_SINGLE_IMPORT.finditer(source):
+        path = m.group("path")
+        alias = (m.group("alias") or "").strip()
+        out[path] = alias or path.rsplit("/", 1)[-1]
+    for block in _RE_GO_BLOCK_IMPORT.finditer(source):
+        for m in _RE_GO_BLOCK_LINE.finditer(block.group("body")):
+            path = m.group("path")
+            alias = (m.group("alias") or "").strip()
+            out[path] = alias or path.rsplit("/", 1)[-1]
+    return out
+
+
+def _extract_go_call_sites(
+    source: str, alias_to_path: dict[str, str],
+) -> dict[str, set[str]]:
+    """Scan source for ``pkg.Foo(`` patterns; return ``{path: {syms}}``.
+
+    Only counts symbols starting with an uppercase letter (Go's
+    "exported = capitalized" rule). Aliases not in
+    ``alias_to_path`` (typically struct field accesses like
+    ``user.Name``) are filtered out automatically.
+    """
+    out: dict[str, set[str]] = {}
+    for m in _RE_GO_CALL_SITE.finditer(source):
+        alias = m.group("pkg")
+        sym = m.group("sym")
+        path = alias_to_path.get(alias)
+        if not path:
+            continue
+        out.setdefault(path, set()).add(sym)
     return out
 
 
@@ -303,7 +353,8 @@ def _first_go_file_in_dir(
 # ``mod foo;`` — declares a child module (resolve to foo.rs or foo/mod.rs)
 _RE_RS_USE = re.compile(
     r"^\s*(?:pub\s+)?use[ \t]+"
-    r"(?P<full>(?:crate|super|self)(?:::(?:\w+|\*|\{[^}]*\}))+)\s*;",
+    r"(?P<full>(?:crate|super|self)(?:::(?:\w+|\*|\{[^}]*\}))+)"
+    r"(?:[ \t]+as[ \t]+\w+)?\s*;",
     re.MULTILINE,
 )
 _RE_RS_MOD = re.compile(
@@ -312,32 +363,49 @@ _RE_RS_MOD = re.compile(
 )
 
 
-def _extract_rs_imports(source: str) -> set[str]:
-    """Parse Rust source → set of intra-crate MODULE paths.
+def _extract_rs_imports(source: str) -> dict[str, set[str]]:
+    """Parse Rust source → ``{module_path: {symbol_or_'*'_or_'@import'}}``.
 
-    For ``use crate::auth::login::Handler;`` the captured ``full`` is
-    ``crate::auth::login::Handler`` — we strip the trailing element
-    (the imported symbol) to keep just the module path
-    ``crate::auth::login``. Glob (``::*``) and brace (``::{...}``)
-    forms have NO trailing symbol; the path is what's before them.
+    ``use crate::auth::login::Handler;`` →
+        ``{"crate::auth::login": {"Handler"}}`` — module path +
+        the specific imported symbol.
+
+    ``use crate::handlers::*;`` →
+        ``{"crate::handlers": {"*"}}`` — namespace import.
+
+    ``use crate::api::{post, get};`` →
+        ``{"crate::api": {"post", "get"}}`` — multiple symbols.
 
     Third-party crate imports (``use serde::Deserialize``) don't
     start with ``crate``/``super``/``self`` so the regex never
-    matches.
+    matches and they're naturally filtered.
     """
-    out: set[str] = set()
+    out: dict[str, set[str]] = {}
     for m in _RE_RS_USE.finditer(source):
         full = m.group("full")
-        # ``full`` looks like ``crate::a::b::FINAL`` where FINAL is
-        # either a symbol name, ``*``, or ``{...}``. Drop the FINAL
-        # segment — what's left is the module path.
-        # Find the last ``::`` and strip everything from there.
+        # Strip trailing ``::FINAL`` — that's either a symbol name,
+        # ``*``, or a ``{a, b, c}`` brace group.
         idx = full.rfind("::")
         if idx == -1:
             continue
         module = full[:idx]
-        if module:
-            out.add(module)
+        final = full[idx + 2:]
+        if not module:
+            continue
+
+        symbols: set[str] = set()
+        if final == "*":
+            symbols.add("*")
+        elif final.startswith("{") and final.endswith("}"):
+            for tok in final[1:-1].split(","):
+                t = tok.strip().split(" as ")[0].strip()
+                if t:
+                    symbols.add(t)
+        else:
+            symbols.add(final)
+
+        if symbols:
+            out.setdefault(module, set()).update(symbols)
     return out
 
 
@@ -558,8 +626,9 @@ def build_symbol_graph(
                     ImportEdge(target_file=path, target_symbol=e.target_symbol)
                 )
 
-    # Walk Go imports — same edge shape, "@import" symbol since Go
-    # imports a package not a specific symbol.
+    # Walk Go imports + call sites — emit one edge per
+    # (target_file, used_symbol) pair so flow_tracer can attribute
+    # specific exported functions instead of falling back to "@import".
     repo_module = _go_module_path(repo_root)
     if repo_module:
         for path in source_files:
@@ -568,15 +637,45 @@ def build_symbol_graph(
             source = _read_safe(repo_root, path)
             if not source:
                 continue
-            for module_path in _extract_go_imports(source):
-                target = _resolve_go_module(module_path, file_set, repo_module)
-                if not target or target == path:
+            alias_to_path = _extract_go_imports_with_aliases(source)
+            # Map only intra-repo imports — strip stdlib / third-party.
+            intra: dict[str, str] = {}
+            for ipath, alias in alias_to_path.items():
+                target = _resolve_go_module(ipath, file_set, repo_module)
+                if target and target != path:
+                    intra[ipath] = alias
+            if not intra:
+                continue
+            # Find call sites (``alias.FuncName(``) that reference
+            # the intra-repo aliases.
+            intra_alias_to_path = {a: p for p, a in intra.items()}
+            calls = _extract_go_call_sites(source, intra_alias_to_path)
+            for ipath, alias in intra.items():
+                target = _resolve_go_module(ipath, file_set, repo_module)
+                if not target:
                     continue
-                edge = ImportEdge(target_file=target, target_symbol="@import")
-                graph.forward.setdefault(path, []).append(edge)
-                graph.reverse.setdefault(target, []).append(
-                    ImportEdge(target_file=path, target_symbol="@import")
-                )
+                used_symbols = calls.get(ipath) or set()
+                if used_symbols:
+                    for sym in used_symbols:
+                        edge = ImportEdge(
+                            target_file=target, target_symbol=sym,
+                        )
+                        graph.forward.setdefault(path, []).append(edge)
+                        graph.reverse.setdefault(target, []).append(
+                            ImportEdge(target_file=path, target_symbol=sym)
+                        )
+                else:
+                    # Imported but no call site found (could be a
+                    # side-effect import or a register-on-init
+                    # package). Emit a single ``@import`` edge so
+                    # the participant still appears in BFS.
+                    edge = ImportEdge(
+                        target_file=target, target_symbol="@import",
+                    )
+                    graph.forward.setdefault(path, []).append(edge)
+                    graph.reverse.setdefault(target, []).append(
+                        ImportEdge(target_file=path, target_symbol="@import")
+                    )
 
     # Walk Rust ``use`` statements + ``mod`` declarations.
     rs_files = [f for f in source_files if Path(f).suffix.lower() in _RS_EXTENSIONS]
@@ -586,14 +685,16 @@ def build_symbol_graph(
             source = _read_safe(repo_root, path)
             if not source:
                 continue
-            uses = _extract_rs_imports(source)
+            uses_with_symbols = _extract_rs_imports(source)
             mods = _extract_rs_mods(source)
             edges: list[ImportEdge] = []
-            for use_path in uses:
+            for use_path, symbols in uses_with_symbols.items():
                 target = _resolve_rs_use(path, use_path, file_set, crate_root)
-                if target and target != path:
+                if not target or target == path:
+                    continue
+                for sym in symbols:
                     edges.append(ImportEdge(
-                        target_file=target, target_symbol="@import",
+                        target_file=target, target_symbol=sym,
                     ))
             # ``mod foo;`` declares child module → either ``foo.rs``
             # in the same dir or ``foo/mod.rs``.
