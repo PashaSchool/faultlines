@@ -1310,6 +1310,14 @@ def _inject_new_pipeline_flows(
             if stats is not None:
                 total, bugs, ratio, last_mod, authors, health = stats
                 flow_paths = sorted(unique_paths)
+                # No commits touched the flow's participant subset
+                # (rare — usually means newly-added files outside the
+                # diff window). Fall back to parent for required
+                # Pydantic fields so Flow.last_modified isn't None.
+                if last_mod is None:
+                    last_mod = feat.last_modified
+                if not authors:
+                    authors = list(feat.authors)
             else:
                 total = feat.total_commits
                 bugs = feat.bug_fixes
