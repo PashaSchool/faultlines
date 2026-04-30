@@ -278,6 +278,199 @@ def execute_workspace_incremental(
     )
 
 
+# ── Stage 5: monolith partial re-scan ───────────────────────────
+
+
+def execute_monolith_incremental(
+    *,
+    plan: IncrementalPlan,
+    prior: PriorScan,
+    diff: GitDiff,
+    repo_root: Any,
+    signatures: dict | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    tracker: "CostTracker | None" = None,
+    is_library: bool = False,
+    commit_context: str | None = None,
+    preferred_names: list[str] | None = None,
+) -> "DeepScanResult":
+    """Run partial re-scan for non-workspace (monolith / single-package)
+    repos.
+
+    Strategy:
+      1. Build the subset = stale features' files ∪ fresh files.
+      2. Call ``deep_scan`` on that subset only. Sonnet re-classifies
+         the changed slice into features; existing canonical locks
+         (``.faultline.yaml`` + ``apply_repo_config``) keep names
+         stable.
+      3. Carry forward every prior feature whose files don't intersect
+         the stale set. Drop deleted files from carry-forward.
+      4. Merge: fresh stale-features replace prior stale; clean
+         features carried verbatim.
+
+    Falls back to prior result if no actual work to do.
+    """
+    from faultline.analyzer.features import detect_candidates
+    from faultline.llm.sonnet_scanner import DeepScanResult, deep_scan
+
+    stale_set: set[str] = set(plan.stale_features)
+    deleted = set(plan.deleted_files)
+    fresh = set(plan.fresh_files)
+
+    if not stale_set and not fresh:
+        # Only deletions — drop deleted files from prior, no LLM call.
+        logger.info(
+            "execute_monolith_incremental: deletions only — "
+            "carrying prior with %d files dropped",
+            len(deleted),
+        )
+        return _carry_only(prior, deleted)
+
+    # Build the subset of files to feed deep_scan.
+    subset_files: set[str] = set(fresh)
+    for name in stale_set:
+        for f in prior.features.get(name) or []:
+            if f not in deleted:
+                subset_files.add(f)
+
+    if not subset_files:
+        return _carry_only(prior, deleted)
+
+    sub_signatures: dict | None = None
+    if signatures:
+        sub_signatures = {
+            f: signatures[f] for f in subset_files if f in signatures
+        }
+
+    candidates = detect_candidates(sorted(subset_files))
+    logger.info(
+        "execute_monolith_incremental: re-scanning %d files "
+        "(%d stale features + %d fresh files) → %d candidates",
+        len(subset_files), len(stale_set), len(fresh), len(candidates),
+    )
+
+    fresh_result = deep_scan(
+        sorted(subset_files),
+        candidates,
+        api_key=api_key,
+        signatures=sub_signatures,
+        is_library=is_library,
+        model=model,
+        tracker=tracker,
+        commit_context=commit_context,
+        preferred_names=preferred_names,
+    )
+    if fresh_result is None:
+        logger.warning(
+            "execute_monolith_incremental: subset scan returned None "
+            "— falling back to prior unchanged"
+        )
+        return _carry_only(prior, deleted)
+
+    # Merge: fresh wins for stale_set; everything else carried.
+    return _merge_monolith_carry(
+        prior=prior,
+        fresh=fresh_result,
+        stale_features=stale_set,
+        deleted_files=deleted,
+    )
+
+
+def _carry_only(
+    prior: PriorScan, deleted: set[str],
+) -> "DeepScanResult":
+    """Build a result from prior with deleted files removed.
+
+    No LLM. Used when the diff is deletions-only or the subset scan
+    declined to return anything useful.
+    """
+    from faultline.llm.sonnet_scanner import DeepScanResult
+    out = DeepScanResult()
+    for name, paths in prior.features.items():
+        kept = [p for p in paths if p not in deleted]
+        if not kept:
+            continue
+        out.features[name] = kept
+        if name in prior.result.descriptions:
+            out.descriptions[name] = prior.result.descriptions[name]
+        if name in prior.result.flows:
+            out.flows[name] = list(prior.result.flows[name])
+        if name in prior.result.flow_descriptions:
+            out.flow_descriptions[name] = dict(prior.result.flow_descriptions[name])
+        if name in prior.result.flow_participants:
+            out.flow_participants[name] = dict(prior.result.flow_participants[name])
+    return out
+
+
+def _merge_monolith_carry(
+    *,
+    prior: PriorScan,
+    fresh: "DeepScanResult",
+    stale_features: set[str],
+    deleted_files: set[str],
+) -> "DeepScanResult":
+    """Merge fresh subset result with prior carry.
+
+    Rule: every prior feature NOT in ``stale_features`` is carried
+    forward verbatim (with deleted files dropped from its path
+    list). Fresh result fully replaces the stale ones — even if the
+    re-scan invented new feature names that don't match prior, the
+    canonical-lock + token-match in ``apply_repo_config`` will
+    normalize them on the next CLI stage.
+    """
+    from faultline.llm.sonnet_scanner import DeepScanResult
+    out = DeepScanResult()
+
+    # 1. Fresh wins.
+    out.features.update({k: list(v) for k, v in fresh.features.items()})
+    out.descriptions.update(dict(fresh.descriptions))
+    out.flows.update({k: list(v) for k, v in fresh.flows.items()})
+    out.flow_descriptions.update(
+        {k: dict(v) for k, v in fresh.flow_descriptions.items()},
+    )
+    out.flow_participants.update(
+        {k: dict(v) for k, v in fresh.flow_participants.items()},
+    )
+    out.cost_summary = fresh.cost_summary
+
+    fresh_names = set(out.features)
+    fresh_files = {f for paths in out.features.values() for f in paths}
+
+    # 2. Carry-forward clean features.
+    carried = 0
+    dropped_empty = 0
+    for name, paths in prior.features.items():
+        if name in stale_features:
+            continue
+        if name in fresh_names:
+            # Fresh produced a same-named feature — fresh wins.
+            continue
+        kept = [
+            p for p in paths
+            if p not in deleted_files and p not in fresh_files
+        ]
+        if not kept:
+            dropped_empty += 1
+            continue
+        out.features[name] = kept
+        if name in prior.result.descriptions:
+            out.descriptions[name] = prior.result.descriptions[name]
+        if name in prior.result.flows:
+            out.flows[name] = list(prior.result.flows[name])
+        if name in prior.result.flow_descriptions:
+            out.flow_descriptions[name] = dict(prior.result.flow_descriptions[name])
+        if name in prior.result.flow_participants:
+            out.flow_participants[name] = dict(prior.result.flow_participants[name])
+        carried += 1
+
+    logger.info(
+        "monolith merge: fresh=%d, carried=%d, dropped_empty=%d → %d total",
+        len(fresh_names), carried, dropped_empty, len(out.features),
+    )
+    return out
+
+
 def _merge_carry_with_fresh(
     *,
     prior: PriorScan,

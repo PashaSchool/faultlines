@@ -425,6 +425,7 @@ def analyze(
                         )
                         if _stale_pkgs and _clean_pkgs:
                             _incremental_subset_inputs = {
+                                "mode": "workspace",
                                 "plan": _plan,
                                 "prior": _prior,
                                 "diff": _diff,
@@ -437,6 +438,29 @@ def analyze(
                                 f"package(s); {len(_clean_pkgs)} clean "
                                 f"package(s) carried forward."
                             )
+                    elif (
+                        _prior is not None
+                        and not _plan.fallback_full_scan
+                        and (_plan.stale_features or _plan.fresh_files)
+                    ):
+                        # Stage 5 path: monolith / non-workspace repo
+                        # with stale features. Re-scan the file subset
+                        # and carry the clean features forward.
+                        _incremental_subset_inputs = {
+                            "mode": "monolith",
+                            "plan": _plan,
+                            "prior": _prior,
+                            "diff": _diff,
+                            "stale_count": len(_plan.stale_features),
+                            "fresh_count": len(_plan.fresh_files),
+                        }
+                        console.print(
+                            f"[blue]Incremental subset:[/blue] "
+                            f"re-scanning {len(_plan.stale_features)} stale "
+                            f"feature(s) + {len(_plan.fresh_files)} fresh "
+                            f"file(s); {len(_plan.clean_features)} clean "
+                            f"feature(s) carried forward."
+                        )
                 except Exception as exc:  # noqa: BLE001 — opportunistic
                     console.print(
                         f"[yellow]⚠ Incremental pre-flight failed "
@@ -455,29 +479,45 @@ def analyze(
                     "forward, no LLM calls made."
                 )
             elif _incremental_subset_inputs is not None:
-                # Stage 4: partial re-scan of stale packages only.
+                # Stage 4 (workspace) or Stage 5 (monolith) partial re-scan.
                 from faultline.llm.incremental import (
+                    execute_monolith_incremental,
                     execute_workspace_incremental,
                 )
                 from faultline.llm.sonnet_scanner import build_commit_context
                 _commit_ctx = build_commit_context(commits)
+                _mode = _incremental_subset_inputs["mode"]
                 try:
-                    _new_pipeline_result = execute_workspace_incremental(
-                        plan=_incremental_subset_inputs["plan"],
-                        prior=_incremental_subset_inputs["prior"],
-                        diff=_incremental_subset_inputs["diff"],
-                        workspace=workspace,
-                        repo_root=Path(repo_path),
-                        api_key=api_key,
-                        model=model,
-                        tracker=_cost_tracker,
-                        use_tools=tool_use,
-                        commit_context=_commit_ctx,
-                    )
+                    if _mode == "workspace":
+                        _new_pipeline_result = execute_workspace_incremental(
+                            plan=_incremental_subset_inputs["plan"],
+                            prior=_incremental_subset_inputs["prior"],
+                            diff=_incremental_subset_inputs["diff"],
+                            workspace=workspace,
+                            repo_root=Path(repo_path),
+                            api_key=api_key,
+                            model=model,
+                            tracker=_cost_tracker,
+                            use_tools=tool_use,
+                            commit_context=_commit_ctx,
+                        )
+                    else:  # monolith
+                        _new_pipeline_result = execute_monolith_incremental(
+                            plan=_incremental_subset_inputs["plan"],
+                            prior=_incremental_subset_inputs["prior"],
+                            diff=_incremental_subset_inputs["diff"],
+                            repo_root=Path(repo_path),
+                            signatures=signatures,
+                            api_key=api_key,
+                            model=model,
+                            tracker=_cost_tracker,
+                            commit_context=_commit_ctx,
+                        )
                     _need_full_scan = False
                     console.print(
-                        f"[green]✓[/green] Incremental subset complete: "
-                        f"{len(_new_pipeline_result.features)} features total"
+                        f"[green]✓[/green] Incremental subset complete "
+                        f"({_mode}): {len(_new_pipeline_result.features)} "
+                        f"features total"
                     )
                 except Exception as exc:  # noqa: BLE001
                     console.print(

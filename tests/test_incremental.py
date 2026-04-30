@@ -260,6 +260,73 @@ def test_merge_drops_features_emptied_by_deletions():
     assert "legacy" not in merged.features
 
 
+def test_carry_only_drops_deleted_files():
+    from faultline.llm.incremental import _carry_only
+    prior_result = DeepScanResult()
+    prior_result.features["auth"] = ["src/a.ts", "src/b.ts"]
+    prior_result.features["billing"] = ["src/c.ts"]
+    prior_result.descriptions["auth"] = "Auth"
+    prior = PriorScan(
+        result=prior_result, last_sha="abc",
+        feature_stats={}, flow_stats={}, scan_meta={},
+    )
+    out = _carry_only(prior, deleted={"src/c.ts"})
+    assert out.features["auth"] == ["src/a.ts", "src/b.ts"]
+    assert "billing" not in out.features  # all files deleted
+    assert out.descriptions["auth"] == "Auth"
+
+
+def test_merge_monolith_fresh_replaces_stale_clean_carries():
+    from faultline.llm.incremental import _merge_monolith_carry
+    prior_result = DeepScanResult()
+    prior_result.features["auth"] = ["src/auth/a.ts", "src/auth/b.ts"]
+    prior_result.features["billing"] = ["src/billing/c.ts"]
+    prior_result.descriptions["auth"] = "Old auth"
+    prior_result.descriptions["billing"] = "Billing"
+    prior_result.flows["auth"] = ["sign-in"]
+    prior = PriorScan(
+        result=prior_result, last_sha="abc",
+        feature_stats={}, flow_stats={}, scan_meta={},
+    )
+    fresh = DeepScanResult()
+    fresh.features["user-authentication"] = ["src/auth/a.ts", "src/auth/b.ts"]
+    fresh.descriptions["user-authentication"] = "Renamed"
+
+    out = _merge_monolith_carry(
+        prior=prior, fresh=fresh,
+        stale_features={"auth"},
+        deleted_files=set(),
+    )
+    # Fresh introduced new name; old auth dropped.
+    assert "user-authentication" in out.features
+    assert "auth" not in out.features
+    # Clean billing carried.
+    assert out.features["billing"] == ["src/billing/c.ts"]
+    assert out.descriptions["billing"] == "Billing"
+
+
+def test_merge_monolith_avoids_double_counting_files():
+    """If a prior file is now claimed by a fresh feature, don't keep
+    it in any clean feature (would double-count)."""
+    from faultline.llm.incremental import _merge_monolith_carry
+    prior_result = DeepScanResult()
+    prior_result.features["legacy-mixed"] = ["src/a.ts", "src/b.ts"]
+    prior = PriorScan(
+        result=prior_result, last_sha="abc",
+        feature_stats={}, flow_stats={}, scan_meta={},
+    )
+    fresh = DeepScanResult()
+    fresh.features["new-shape"] = ["src/a.ts"]  # claims a.ts
+    out = _merge_monolith_carry(
+        prior=prior, fresh=fresh,
+        stale_features=set(),  # legacy-mixed is "clean"
+        deleted_files=set(),
+    )
+    # legacy-mixed carried but a.ts removed (now in new-shape).
+    assert out.features["legacy-mixed"] == ["src/b.ts"]
+    assert out.features["new-shape"] == ["src/a.ts"]
+
+
 def test_execute_workspace_incremental_no_stale_returns_prior():
     """When no packages are stale, execute_workspace_incremental
     short-circuits and returns the prior scan unchanged — no LLM
