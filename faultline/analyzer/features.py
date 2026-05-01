@@ -1,10 +1,16 @@
+from __future__ import annotations
+
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from faultline.models.types import Commit, Feature, FeatureMap, Flow, PullRequest, SymbolAttribution, TimelinePoint
+
+if TYPE_CHECKING:
+    from faultline.analyzer.blame_index import BlameIndex
 
 _MAX_FILES_PER_BULK_COMMIT = 30  # commits touching more files than this are excluded (bulk ops)
 _MIN_COCHANGE_COMMITS = 2        # minimum shared commits for a pair to count
@@ -1053,6 +1059,7 @@ def build_feature_map(
     remote_url: str = "",
     shared_attributions: dict[str, list[SymbolAttribution]] | None = None,
     skip_small_feature_merge: bool = False,
+    blame_index: "BlameIndex | None" = None,
 ) -> FeatureMap:
     """Builds a FeatureMap by joining commits with detected features.
 
@@ -1132,13 +1139,26 @@ def build_feature_map(
         bug_fixes = sum(1 for c in commits_for_feature if c.is_bug_fix)
         bug_fix_ratio = bug_fixes / total if total > 0 else 0.0
 
-        # Symbol-weighted health score
-        sym_health = None
-        commit_weights = feature_commit_weights.get(feature_name, {})
-        if shared_attributions and feature_name in shared_attributions and total > 0:
-            sym_health = _calculate_weighted_health(commits_for_feature, commit_weights)
-
         feat_attributions = shared_attributions.get(feature_name, []) if shared_attributions else []
+
+        # Symbol-weighted health score.
+        # Tier 1 (preferred): line-scoped via BlameIndex — uses actual
+        #   commits that touched the symbol's line ranges.
+        # Tier 2 (fallback):  file-fraction weighting via
+        #   _calculate_weighted_health when no BlameIndex is available.
+        # Tier 3:             None when neither applies.
+        sym_health: float | None = None
+        if feat_attributions and blame_index is not None:
+            line_scoped = _compute_line_scoped_health(
+                feature_name, feat_attributions, commits, blame_index,
+            )
+            if line_scoped is not None:
+                sym_health = line_scoped[0]
+        if sym_health is None and feat_attributions and total > 0:
+            commit_weights = feature_commit_weights.get(feature_name, {})
+            sym_health = _calculate_weighted_health(
+                commits_for_feature, commit_weights,
+            )
 
         features.append(Feature(
             name=feature_name,
@@ -1401,6 +1421,69 @@ def _calculate_health(
     activity_factor = min(1.0, total_commits / 50)
 
     return round(base_score * activity_factor + base_score * (1 - activity_factor) * 0.8, 1)
+
+
+def _compute_line_scoped_health(
+    feature_name: str,
+    attributions: list[SymbolAttribution] | None,
+    all_commits: list[Commit],
+    blame_index: "BlameIndex | None",
+) -> tuple[float, int, int] | None:
+    """Compute health using actual line-level git blame.
+
+    Args:
+        feature_name: For logging only.
+        attributions: ``SymbolAttribution`` list pinning the feature to
+            specific (file, line_range) regions. ``None`` or empty
+            short-circuits to ``None``.
+        all_commits: All commits in the analysis window.
+        blame_index: Indexed cache of line→commit mappings.
+            ``None`` short-circuits to ``None``.
+
+    Returns:
+        ``(health_score, scoped_commits, scoped_bug_fixes)`` or
+        ``None`` when no line-level data could be sourced. Falls back
+        per-attribution: an attribution whose file isn't indexed is
+        skipped silently — the score reflects whichever ranges DID
+        get blame data.
+
+    The set of "commits scoped to this feature" is the union of
+    commits that touched any (file, line_range) pair in the
+    attributions. Each unique commit counts once toward the ratio,
+    even if it touched multiple ranges.
+    """
+    if not attributions or blame_index is None:
+        return None
+
+    scoped_shas: set[str] = set()
+    indexed_any = False
+    for attr in attributions:
+        for (start, end) in attr.line_ranges:
+            shas = blame_index.commits_touching_lines(
+                attr.file_path, start, end,
+            )
+            if shas is None:
+                # File not indexed — skip this attribution's contribution
+                continue
+            indexed_any = True
+            scoped_shas.update(shas)
+
+    if not indexed_any:
+        return None
+
+    sha_to_commit = {c.sha: c for c in all_commits}
+    scoped_commits = [
+        sha_to_commit[sha] for sha in scoped_shas if sha in sha_to_commit
+    ]
+    if not scoped_commits:
+        # Lines exist in blame but no commits matched our analysis
+        # window — treat as healthy (nothing actively touched this).
+        return (100.0, 0, 0)
+
+    bug_fixes = sum(1 for c in scoped_commits if c.is_bug_fix)
+    ratio = bug_fixes / len(scoped_commits)
+    health = _calculate_health(ratio, len(scoped_commits), scoped_commits)
+    return (health, len(scoped_commits), bug_fixes)
 
 
 def _calculate_weighted_health(
