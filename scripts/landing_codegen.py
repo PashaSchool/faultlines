@@ -71,6 +71,50 @@ def participants_from_attributions(
     return out
 
 
+def participants_from_flow_participants(
+    items: list[dict],
+) -> list[dict]:
+    """Flatten FlowParticipant[] (Refactor Day 1 model) into Participant.
+
+    ``FlowParticipant`` has ``path`` + ``symbols: list[SymbolRange]``
+    where each SymbolRange has ``name`` + ``start_line`` + ``end_line``.
+    We emit one Participant per symbol so the UI can deep-link to the
+    function. Files with no symbols (entry-file with no enclosing
+    function, side-effect-only imports) emit one whole-file
+    Participant with no symbol.
+
+    Returns participants ordered by (depth, path) so the most direct
+    files surface first in the UI.
+    """
+    out: list[dict] = []
+    for item in items or []:
+        path = item.get("path", "")
+        if not path:
+            continue
+        role = item.get("layer") or item.get("role")
+        symbols = item.get("symbols") or []
+        if not symbols:
+            out.append({
+                "path": path,
+                "symbol": None,
+                "lineStart": None,
+                "lineEnd": None,
+                "role": role,
+                "sharedWith": [],
+            })
+            continue
+        for s in symbols:
+            out.append({
+                "path": path,
+                "symbol": s.get("name"),
+                "lineStart": s.get("start_line"),
+                "lineEnd": s.get("end_line"),
+                "role": role,
+                "sharedWith": [],
+            })
+    return out
+
+
 def emit_flow(flow: dict) -> str:
     name = flow.get("display_name") or title_case(flow.get("name", ""))
     ratio = flow.get("bug_fix_ratio", 0)
@@ -85,8 +129,14 @@ def emit_flow(flow: dict) -> str:
         f"commits: {commits}",
         f"files: {files}",
     ]
-    # Sprint 4 optional fields
-    participants = participants_from_attributions(flow.get("symbol_attributions"))
+    # Sprint 4 optional fields. Refactor Day 5: prefer the new
+    # ``participants`` (FlowParticipant) over legacy
+    # ``symbol_attributions`` — same Participant TS shape on the
+    # landing side either way.
+    participants = (
+        participants_from_flow_participants(flow.get("participants"))
+        or participants_from_attributions(flow.get("symbol_attributions"))
+    )
     if participants:
         block = "[" + ", ".join(emit_participant(p) for p in participants[:30]) + "]"
         fields.append(f"participants: {block}")
@@ -114,8 +164,14 @@ def emit_feature(f: dict) -> str:
     cov = f.get("coverage_pct")
     if cov is not None:
         extras["lineScopedCoverage"] = str(round(float(cov)))
-    # Feature-level participants from shared_attributions
-    feat_participants = participants_from_attributions(f.get("shared_attributions"))
+    # Feature-level participants. Refactor Day 5: prefer the per-
+    # feature ``participants`` (Refactor Day 1 model) over legacy
+    # ``shared_attributions``. Both flatten to the same
+    # Participant shape on the landing side.
+    feat_participants = (
+        participants_from_flow_participants(f.get("participants"))
+        or participants_from_attributions(f.get("shared_attributions"))
+    )
     if feat_participants:
         block = "[" + ", ".join(emit_participant(p) for p in feat_participants[:50]) + "]"
         extras["participants"] = block
