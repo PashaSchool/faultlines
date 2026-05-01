@@ -985,6 +985,7 @@ def analyze(
             shared_attributions=shared_attributions,
             skip_small_feature_merge=_skip_merge,
             blame_index=blame_index,
+            feature_participants=feature_participants or None,
         )
 
         # Refactor Day 3: attach participants to each Feature so that
@@ -1753,9 +1754,11 @@ def _apply_feature_coverage(
     from faultline.analyzer.features import _is_test_file
 
     for feature in feature_map.features:
-        # Tier 1: line-scoped via shared_attributions
+        # Tier 1: line-scoped — prefer per-feature participants
+        # (Refactor Day 3) over legacy shared_attributions.
         scoped_pct = _coverage_for_attributions(
-            feature.shared_attributions, detailed, path_prefix,
+            feature.participants or feature.shared_attributions,
+            detailed, path_prefix,
         )
         if scoped_pct is not None:
             feature.coverage_pct = scoped_pct
@@ -1772,10 +1775,14 @@ def _apply_feature_coverage(
             if coverages:
                 feature.coverage_pct = round(sum(coverages) / len(coverages), 1)
 
-        # Apply coverage to flows within this feature
+        # Apply coverage to flows within this feature.
+        # Refactor Day 4: prefer ``flow.participants`` over legacy
+        # ``flow.symbol_attributions`` — the former is the Sprint 7
+        # call-graph trace populated whenever --trace-flows ran.
         for flow in feature.flows:
             flow_scoped = _coverage_for_attributions(
-                flow.symbol_attributions, detailed, path_prefix,
+                flow.participants or flow.symbol_attributions,
+                detailed, path_prefix,
             )
             if flow_scoped is not None:
                 flow.coverage_pct = flow_scoped
@@ -1793,25 +1800,40 @@ def _apply_feature_coverage(
 
 
 def _coverage_for_attributions(
-    attributions: "list[SymbolAttribution] | None",
+    attributions,
     detailed: "dict[str, FileCoverage] | None",
     path_prefix: str,
 ) -> float | None:
-    """Average coverage over each SymbolAttribution's line ranges.
+    """Average coverage over each item's line ranges.
 
-    Returns ``None`` when no detailed data is available, no attributions
-    were given, or none of the attributed files have line-level
-    coverage. The caller should then fall back to file-level scoring.
+    Refactor Day 4: accepts either ``SymbolAttribution`` or
+    ``FlowParticipant`` items. SymbolAttribution exposes
+    ``file_path`` + ``line_ranges`` directly; FlowParticipant
+    exposes ``path`` + ``symbols`` and we derive ranges from each
+    SymbolRange's ``start_line``/``end_line``.
+
+    Returns ``None`` when no detailed data is available, no
+    attributions were given, or none of the attributed files have
+    line-level coverage. The caller should then fall back to file-
+    level scoring.
     """
     if not attributions or not detailed:
         return None
 
     pcts: list[float] = []
-    for attr in attributions:
+    for item in attributions:
+        # Duck-type both shapes.
+        file_path = getattr(item, "file_path", None) or getattr(item, "path", "")
+        ranges = getattr(item, "line_ranges", None)
+        if ranges is None:
+            symbols = getattr(item, "symbols", []) or []
+            ranges = [(s.start_line, s.end_line) for s in symbols]
+        if not ranges or not file_path:
+            continue
         # Try with and without path_prefix
-        candidates = [attr.file_path]
+        candidates = [file_path]
         if path_prefix:
-            candidates.append(f"{path_prefix}{attr.file_path}")
+            candidates.append(f"{path_prefix}{file_path}")
         fc = None
         for cand in candidates:
             fc = detailed.get(cand)
@@ -1819,7 +1841,7 @@ def _coverage_for_attributions(
                 break
         if fc is None:
             continue
-        for (start, end) in attr.line_ranges:
+        for (start, end) in ranges:
             range_pct = fc.coverage_for_range(start, end)
             if range_pct is not None:
                 pcts.append(range_pct)

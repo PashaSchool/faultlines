@@ -1060,6 +1060,7 @@ def build_feature_map(
     shared_attributions: dict[str, list[SymbolAttribution]] | None = None,
     skip_small_feature_merge: bool = False,
     blame_index: "BlameIndex | None" = None,
+    feature_participants: dict | None = None,
 ) -> FeatureMap:
     """Builds a FeatureMap by joining commits with detected features.
 
@@ -1140,20 +1141,28 @@ def build_feature_map(
         bug_fix_ratio = bug_fixes / total if total > 0 else 0.0
 
         feat_attributions = shared_attributions.get(feature_name, []) if shared_attributions else []
+        feat_participants = (
+            feature_participants.get(feature_name, [])
+            if feature_participants else []
+        )
 
         # Symbol-weighted health score.
-        # Tier 1 (preferred): line-scoped via BlameIndex — uses actual
-        #   commits that touched the symbol's line ranges.
+        # Tier 1 (preferred): line-scoped via BlameIndex. Refactor Day 4
+        #   prefers ``feature_participants`` (per-feature, populated on
+        #   workspace monorepos and Django apps) and falls back to
+        #   ``shared_attributions`` (cross-feature, legacy).
         # Tier 2 (fallback):  file-fraction weighting via
         #   _calculate_weighted_health when no BlameIndex is available.
         # Tier 3:             None when neither applies.
         sym_health: float | None = None
-        if feat_attributions and blame_index is not None:
-            line_scoped = _compute_line_scoped_health(
-                feature_name, feat_attributions, commits, blame_index,
-            )
-            if line_scoped is not None:
-                sym_health = line_scoped[0]
+        if blame_index is not None:
+            scoring_input = feat_participants or feat_attributions
+            if scoring_input:
+                line_scoped = _compute_line_scoped_health(
+                    feature_name, scoring_input, commits, blame_index,
+                )
+                if line_scoped is not None:
+                    sym_health = line_scoped[0]
         if sym_health is None and feat_attributions and total > 0:
             commit_weights = feature_commit_weights.get(feature_name, {})
             sym_health = _calculate_weighted_health(
@@ -1423,9 +1432,31 @@ def _calculate_health(
     return round(base_score * activity_factor + base_score * (1 - activity_factor) * 0.8, 1)
 
 
+def _ranges_from_item(item) -> tuple[str, list[tuple[int, int]]]:
+    """Extract (file_path, [(start, end)...]) from either type.
+
+    ``SymbolAttribution`` exposes ``file_path`` + ``line_ranges``.
+    ``FlowParticipant`` exposes ``path`` + ``symbols`` (list of
+    ``SymbolRange`` objects). When a FlowParticipant has zero
+    symbols (entry-file with no enclosing symbol), we fall back to
+    the whole file (range 1..1) — blame_index returns whatever
+    commits touched line 1, which is still scope-aware enough for a
+    side-effect-only entry.
+    """
+    file_path = getattr(item, "file_path", None) or getattr(item, "path", "")
+    ranges = getattr(item, "line_ranges", None)
+    if ranges is None:
+        # FlowParticipant: ranges come from symbols
+        symbols = getattr(item, "symbols", []) or []
+        ranges = [(s.start_line, s.end_line) for s in symbols]
+        if not ranges:
+            ranges = [(1, 1)]
+    return file_path, list(ranges)
+
+
 def _compute_line_scoped_health(
     feature_name: str,
-    attributions: list[SymbolAttribution] | None,
+    attributions,
     all_commits: list[Commit],
     blame_index: "BlameIndex | None",
 ) -> tuple[float, int, int] | None:
@@ -1433,9 +1464,12 @@ def _compute_line_scoped_health(
 
     Args:
         feature_name: For logging only.
-        attributions: ``SymbolAttribution`` list pinning the feature to
-            specific (file, line_range) regions. ``None`` or empty
-            short-circuits to ``None``.
+        attributions: A list of ``SymbolAttribution`` OR
+            ``FlowParticipant`` items pinning the feature to specific
+            (file, line_range) regions. ``None`` or empty short-
+            circuits to ``None``. Refactor Day 4: accepts either type
+            so the same scoring works on legacy ``shared_attributions``
+            and the new per-feature ``participants`` surface.
         all_commits: All commits in the analysis window.
         blame_index: Indexed cache of line→commit mappings.
             ``None`` short-circuits to ``None``.
@@ -1457,10 +1491,11 @@ def _compute_line_scoped_health(
 
     scoped_shas: set[str] = set()
     indexed_any = False
-    for attr in attributions:
-        for (start, end) in attr.line_ranges:
+    for item in attributions:
+        file_path, ranges = _ranges_from_item(item)
+        for (start, end) in ranges:
             shas = blame_index.commits_touching_lines(
-                attr.file_path, start, end,
+                file_path, start, end,
             )
             if shas is None:
                 # File not indexed — skip this attribution's contribution
