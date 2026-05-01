@@ -183,6 +183,16 @@ def analyze(
             "--no-post-process for raw scan output."
         ),
     ),
+    line_attribution: bool = typer.Option(
+        True,
+        "--line-attribution/--no-line-attribution",
+        help=(
+            "Compute symbol-level health and coverage by indexing line-level "
+            "git blame for files with SymbolAttributions. Adds 1-10 minutes "
+            "to first scan (cached for subsequent runs). Default ON. Pass "
+            "--no-line-attribution to skip and use file-level scoring only."
+        ),
+    ),
     incremental: bool = typer.Option(
         False,
         "--incremental",
@@ -904,6 +914,29 @@ def analyze(
             bool(repo_structure.is_library)
             and not _new_pipeline_used_workspace
         )
+        # Sprint 3 Day 11: build BlameIndex for files referenced by
+        # symbol attributions, so build_feature_map can use line-scoped
+        # health (Tier 1) instead of falling back to file-fraction
+        # weighting. Indexed once per scan; subsequent scans are cached
+        # at .faultline/cache/blame.sqlite. Disabled via
+        # --no-line-attribution.
+        blame_index = None
+        if line_attribution and shared_attributions:
+            from faultline.analyzer.blame_index import BlameIndex
+            files_to_index: set[str] = set()
+            for attrs in shared_attributions.values():
+                for attr in attrs:
+                    files_to_index.add(attr.file_path)
+            if files_to_index:
+                blame_index = BlameIndex(repo.working_tree_dir)
+                stats = blame_index.index_files(sorted(files_to_index))
+                console.print(
+                    f"[dim]Blame index: {stats.indexed} indexed + "
+                    f"{stats.cached} cached"
+                    + (f" + {stats.failed} failed" if stats.failed else "")
+                    + f" ({len(files_to_index)} files)[/dim]"
+                )
+
         feature_map = build_feature_map(
             repo_path=repo_path,
             commits=commits,
@@ -912,6 +945,7 @@ def analyze(
             remote_url=remote_url,
             shared_attributions=shared_attributions,
             skip_small_feature_merge=_skip_merge,
+            blame_index=blame_index,
         )
 
         # 6a. Day 9: inject descriptions from the new pipeline, if we
