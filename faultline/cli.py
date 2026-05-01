@@ -917,19 +917,55 @@ def analyze(
             bool(repo_structure.is_library)
             and not _new_pipeline_used_workspace
         )
-        # Sprint 3 Day 11: build BlameIndex for files referenced by
-        # symbol attributions, so build_feature_map can use line-scoped
-        # health (Tier 1) instead of falling back to file-fraction
-        # weighting. Indexed once per scan; subsequent scans are cached
-        # at .faultline/cache/blame.sqlite. Disabled via
-        # --no-line-attribution.
+        # Refactor Day 3: build per-feature participants via SymbolGraph
+        # BFS. This replaces the cross-feature ``shared_attributions``
+        # surface as the primary attachment for symbol-scoped scoring
+        # — works on workspace monorepos and Django apps where
+        # shared_attributions stays empty. Cross-language: any repo with
+        # a populated SymbolGraph (TS/JS/Py/Go/Rust per Sprint 1 Day 4-5).
+        feature_participants: dict[str, list] = {}
+        if line_attribution and signatures:
+            try:
+                from faultline.analyzer.feature_participants import (
+                    build_feature_participants,
+                )
+                from faultline.analyzer.symbol_graph import build_symbol_graph
+                participants_graph = build_symbol_graph(
+                    str(repo.working_tree_dir),
+                    list(analysis_files),
+                    include_http_edges=False,
+                )
+                feature_participants = build_feature_participants(
+                    feature_paths,
+                    participants_graph,
+                    repo_root=str(repo.working_tree_dir),
+                )
+                if feature_participants:
+                    total_p = sum(len(v) for v in feature_participants.values())
+                    console.print(
+                        f"[dim]Feature participants: {total_p} across "
+                        f"{len(feature_participants)} features "
+                        f"(avg {total_p // max(len(feature_participants), 1)}/feature)[/dim]"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("feature_participants skipped (%s)", exc)
+                feature_participants = {}
+
+        # Sprint 3 Day 11 + Refactor Day 3: build BlameIndex over the
+        # union of files referenced by EITHER shared_attributions
+        # (legacy, cross-feature only) OR feature.participants (new
+        # per-feature surface). The participant union covers many more
+        # repos and is what Day 4 scoring reads from.
         blame_index = None
-        if line_attribution and shared_attributions:
+        if line_attribution and (shared_attributions or feature_participants):
             from faultline.analyzer.blame_index import BlameIndex
             files_to_index: set[str] = set()
-            for attrs in shared_attributions.values():
+            for attrs in (shared_attributions or {}).values():
                 for attr in attrs:
                     files_to_index.add(attr.file_path)
+            for parts in feature_participants.values():
+                for p in parts:
+                    files_to_index.add(p.path)
             if files_to_index:
                 blame_index = BlameIndex(repo.working_tree_dir)
                 stats = blame_index.index_files(sorted(files_to_index))
@@ -950,6 +986,14 @@ def analyze(
             skip_small_feature_merge=_skip_merge,
             blame_index=blame_index,
         )
+
+        # Refactor Day 3: attach participants to each Feature so that
+        # downstream consumers (codegen, dashboard, scoring rewrite in
+        # Day 4) can read them as a primary surface. Names that don't
+        # match (rare — usually post-process renamed) silently no-op.
+        if feature_participants:
+            for feat in feature_map.features:
+                feat.participants = feature_participants.get(feat.name, [])
 
         # 6a. Day 9: inject descriptions from the new pipeline, if we
         # used it. ``DeepScanResult.descriptions`` is keyed by the feature
