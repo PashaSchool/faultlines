@@ -122,6 +122,15 @@ class Feature(BaseModel):
     bug_fix_prs: list[PullRequest] = []
     coverage_pct: float | None = None  # avg line coverage % across source files; None if unavailable
     shared_attributions: list[SymbolAttribution] = []  # symbol-scoped data for shared files
+    # Refactor Day 1: participants — every file (with line ranges and
+    # role) imported transitively from any of this feature's source
+    # files. Built by analyzer.feature_participants.build_feature_participants
+    # via SymbolGraph BFS. Replaces ``shared_attributions`` as the
+    # primary attachment surface for line-scoped scoring; the older
+    # field stays populated for back-compat callers but the
+    # cross-feature gate ("file in 2+ features") no longer disables
+    # symbol-scoped health and coverage.
+    participants: list["FlowParticipant"] = []
     symbol_health_score: float | None = None           # health score weighted by symbol line ranges
 
 
