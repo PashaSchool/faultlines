@@ -23,6 +23,8 @@ from faultline.models.types import SymbolRange
 
 _TS_JS_EXTENSIONS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _PYTHON_EXTENSIONS = {".py"}
+_GO_EXTENSIONS = {".go"}
+_RUST_EXTENSIONS = {".rs"}
 
 # Named function/class/const exports
 _RE_NAMED_EXPORT = re.compile(
@@ -56,6 +58,28 @@ _RE_PYTHON_FUNC = re.compile(r"^(?:async\s+)?def\s+([a-zA-Z]\w*)", re.MULTILINE)
 _RE_PYTHON_ROUTE = re.compile(
     r"@\w*(?:router|app|blueprint|bp|api)\s*\.\s*(get|post|put|delete|patch)\s*\(\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
+)
+
+# Go: top-level capitalized symbols are exported (idiomatic Go).
+# Match func, type, var, const, struct decls.
+_RE_GO_FUNC = re.compile(
+    r"^func\s+(?:\([^)]*\)\s+)?([A-Z]\w*)\s*\(",
+    re.MULTILINE,
+)
+_RE_GO_TYPE = re.compile(
+    r"^type\s+([A-Z]\w*)\b",
+    re.MULTILINE,
+)
+_RE_GO_VAR = re.compile(
+    r"^(?:var|const)\s+([A-Z]\w*)\b",
+    re.MULTILINE,
+)
+# Rust: ``pub`` items at any visibility level (we conservatively
+# accept ``pub``, ``pub(crate)``, ``pub(super)``).
+_RE_RUST_PUB = re.compile(
+    r"^\s*pub(?:\([^)]+\))?\s+(?:async\s+)?(?:unsafe\s+)?"
+    r"(?:fn|struct|enum|trait|type|const|static|mod)\s+([a-zA-Z_]\w*)",
+    re.MULTILINE,
 )
 
 
@@ -118,7 +142,12 @@ def extract_signatures(
 
     for rel_path in files:
         suffix = Path(rel_path).suffix.lower()
-        if suffix not in _TS_JS_EXTENSIONS and suffix not in _PYTHON_EXTENSIONS:
+        if (
+            suffix not in _TS_JS_EXTENSIONS
+            and suffix not in _PYTHON_EXTENSIONS
+            and suffix not in _GO_EXTENSIONS
+            and suffix not in _RUST_EXTENSIONS
+        ):
             continue
         abs_path = root / rel_path
         try:
@@ -128,6 +157,10 @@ def extract_signatures(
 
         if suffix in _PYTHON_EXTENSIONS:
             sig = _parse_python_file(rel_path, source)
+        elif suffix in _GO_EXTENSIONS:
+            sig = _parse_go_file(rel_path, source)
+        elif suffix in _RUST_EXTENSIONS:
+            sig = _parse_rust_file(rel_path, source)
         else:
             sig = _parse_file(rel_path, source)
             sig.symbol_ranges = extract_symbol_ranges(source)
@@ -137,6 +170,106 @@ def extract_signatures(
             result[rel_path] = sig
 
     return result
+
+
+def _parse_go_file(rel_path: str, source: str) -> FileSignature:
+    """Extract exports + symbol ranges from a Go source file.
+
+    Go convention: identifiers starting with an uppercase letter are
+    package-exported. Receiver methods on exported types
+    (``func (s *Server) HandleX(...)``) count too.
+    """
+    sig = FileSignature(path=rel_path)
+    seen: set[str] = set()
+    raw: list[tuple[int, str, str]] = []  # (start_line, name, kind)
+
+    for match in _RE_GO_FUNC.finditer(source):
+        name = match.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        sig.exports.append(name)
+        line = source.count("\n", 0, match.start()) + 1
+        raw.append((line, name, "function"))
+
+    for match in _RE_GO_TYPE.finditer(source):
+        name = match.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        sig.exports.append(name)
+        line = source.count("\n", 0, match.start()) + 1
+        raw.append((line, name, "class"))
+
+    for match in _RE_GO_VAR.finditer(source):
+        name = match.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        sig.exports.append(name)
+        line = source.count("\n", 0, match.start()) + 1
+        raw.append((line, name, "const"))
+
+    sig.symbol_ranges = _ranges_from_raw(raw, source)
+    return sig
+
+
+def _parse_rust_file(rel_path: str, source: str) -> FileSignature:
+    """Extract ``pub`` items and their line ranges from a Rust source file."""
+    sig = FileSignature(path=rel_path)
+    seen: set[str] = set()
+    raw: list[tuple[int, str, str]] = []
+
+    for match in _RE_RUST_PUB.finditer(source):
+        name = match.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        sig.exports.append(name)
+        line = source.count("\n", 0, match.start()) + 1
+        # Crude kind detection from the matched item keyword
+        text = match.group(0)
+        if "fn " in text:
+            kind = "function"
+        elif "struct " in text or "enum " in text or "trait " in text:
+            kind = "class"
+        elif "type " in text:
+            kind = "type"
+        else:
+            kind = "const"
+        raw.append((line, name, kind))
+
+    sig.symbol_ranges = _ranges_from_raw(raw, source)
+    return sig
+
+
+def _ranges_from_raw(
+    raw: list[tuple[int, str, str]], source: str,
+) -> list[SymbolRange]:
+    """Convert (start_line, name, kind) tuples to ``SymbolRange`` with end_line.
+
+    End-of-symbol heuristic: extends until the start of the next top-
+    level symbol (or EOF). Good enough for symbol-scoped queries
+    where exact boundaries matter less than catching the right
+    function body.
+    """
+    if not raw:
+        return []
+    raw_sorted = sorted(raw, key=lambda x: x[0])
+    total_lines = source.count("\n") + 1
+    out: list[SymbolRange] = []
+    for i, (line, name, kind) in enumerate(raw_sorted):
+        end_line = (
+            raw_sorted[i + 1][0] - 1
+            if i + 1 < len(raw_sorted)
+            else total_lines
+        )
+        if end_line < line:
+            end_line = line
+        out.append(SymbolRange(
+            name=name, start_line=line, end_line=end_line, kind=kind,
+        ))
+    return out
 
 
 def _parse_file(rel_path: str, source: str) -> FileSignature:
