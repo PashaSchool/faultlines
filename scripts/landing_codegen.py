@@ -232,7 +232,19 @@ REPO_META = {
 
 def emit_repo(slug: str) -> str:
     meta = REPO_META[slug]
-    d = json.loads(Path(f"benchmarks/{slug}/feature-map-verified.json").read_text())
+    # Prefer the latest re-scan's cleaned output, fall back to earlier
+    # variants. Most recent first.
+    candidates = [
+        f"benchmarks/{slug}/feature-map-final.cleaned.json",
+        f"benchmarks/{slug}/feature-map-final.json",
+        f"benchmarks/{slug}/feature-map-verified.json",
+        f"benchmarks/{slug}/feature-map.cleaned.json",
+        f"benchmarks/{slug}/feature-map.json",
+    ]
+    src = next((p for p in candidates if Path(p).exists()), None)
+    if src is None:
+        raise FileNotFoundError(f"no feature-map JSON found for {slug}")
+    d = json.loads(Path(src).read_text())
     features = d.get("features", [])
     n_features = len(features)
     n_flows = sum(len(f.get("flows") or []) for f in features)
