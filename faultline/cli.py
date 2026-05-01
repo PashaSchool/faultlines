@@ -972,12 +972,25 @@ def analyze(
                     f"flows {fl_before} → {fl_after}[/dim]"
                 )
 
-        # 6b. Read coverage data (if available)
-        from faultline.analyzer.coverage import read_coverage
+        # 6b. Read coverage data (if available).
+        # Sprint 2 Day 9: prefer line-level data so we can scope coverage
+        # to SymbolAttribution.line_ranges. Falls back to file-level
+        # when no detailed data available (legacy contract).
+        from faultline.analyzer.coverage import read_coverage, read_coverage_detailed
         coverage_data = read_coverage(str(repo.working_tree_dir), coverage_path=coverage)
+        coverage_detailed = read_coverage_detailed(
+            str(repo.working_tree_dir), coverage_path=coverage,
+        )
         if coverage_data:
-            console.print(f"[dim]Coverage data: {len(coverage_data)} files[/dim]")
-            _apply_feature_coverage(feature_map, coverage_data, path_prefix)
+            console.print(
+                f"[dim]Coverage data: {len(coverage_data)} files"
+                + (f" (line-level for {len(coverage_detailed)})" if coverage_detailed else "")
+                + "[/dim]"
+            )
+            _apply_feature_coverage(
+                feature_map, coverage_data, path_prefix,
+                detailed=coverage_detailed or None,
+            )
 
         # 6c. Detect flows within each feature (optional)
         # Day 11: skip flow detection for libraries by default. Libraries
@@ -1606,29 +1619,51 @@ def _apply_feature_coverage(
     feature_map: "FeatureMap",
     coverage_data: dict[str, float],
     path_prefix: str,
+    detailed: dict[str, "FileCoverage"] | None = None,
 ) -> None:
-    """Computes average line coverage per feature from coverage report data.
+    """Compute coverage per feature/flow from coverage report data.
 
-    Mutates feature_map.features in place, setting coverage_pct on each feature
-    that has matching files in the coverage report.
+    Two-tier:
+      Tier 1 (preferred): when ``detailed`` is provided AND the feature
+        has ``shared_attributions``, compute line-scoped coverage by
+        averaging ``FileCoverage.coverage_for_range`` over each
+        ``SymbolAttribution.line_ranges``. Same logic for flows using
+        ``flow.symbol_attributions``.
+      Tier 2 (fallback): file-level — average pct over all
+        feature/flow files (legacy behaviour).
+
+    Mutates ``feature_map.features`` in place.
     """
     from faultline.analyzer.features import _is_test_file
 
     for feature in feature_map.features:
-        coverages = []
-        for file_path in feature.paths:
-            if _is_test_file(file_path):
-                continue
-            # Try matching with and without path_prefix
-            full_path = f"{path_prefix}{file_path}" if path_prefix else file_path
-            pct = _match_coverage(coverage_data, file_path, full_path)
-            if pct is not None:
-                coverages.append(pct)
-        if coverages:
-            feature.coverage_pct = round(sum(coverages) / len(coverages), 1)
+        # Tier 1: line-scoped via shared_attributions
+        scoped_pct = _coverage_for_attributions(
+            feature.shared_attributions, detailed, path_prefix,
+        )
+        if scoped_pct is not None:
+            feature.coverage_pct = scoped_pct
+        else:
+            # Tier 2: file-level average
+            coverages = []
+            for file_path in feature.paths:
+                if _is_test_file(file_path):
+                    continue
+                full_path = f"{path_prefix}{file_path}" if path_prefix else file_path
+                pct = _match_coverage(coverage_data, file_path, full_path)
+                if pct is not None:
+                    coverages.append(pct)
+            if coverages:
+                feature.coverage_pct = round(sum(coverages) / len(coverages), 1)
 
         # Apply coverage to flows within this feature
         for flow in feature.flows:
+            flow_scoped = _coverage_for_attributions(
+                flow.symbol_attributions, detailed, path_prefix,
+            )
+            if flow_scoped is not None:
+                flow.coverage_pct = flow_scoped
+                continue
             flow_coverages = []
             for file_path in flow.paths:
                 if _is_test_file(file_path):
@@ -1639,6 +1674,42 @@ def _apply_feature_coverage(
                     flow_coverages.append(pct)
             if flow_coverages:
                 flow.coverage_pct = round(sum(flow_coverages) / len(flow_coverages), 1)
+
+
+def _coverage_for_attributions(
+    attributions: "list[SymbolAttribution] | None",
+    detailed: "dict[str, FileCoverage] | None",
+    path_prefix: str,
+) -> float | None:
+    """Average coverage over each SymbolAttribution's line ranges.
+
+    Returns ``None`` when no detailed data is available, no attributions
+    were given, or none of the attributed files have line-level
+    coverage. The caller should then fall back to file-level scoring.
+    """
+    if not attributions or not detailed:
+        return None
+
+    pcts: list[float] = []
+    for attr in attributions:
+        # Try with and without path_prefix
+        candidates = [attr.file_path]
+        if path_prefix:
+            candidates.append(f"{path_prefix}{attr.file_path}")
+        fc = None
+        for cand in candidates:
+            fc = detailed.get(cand)
+            if fc is not None:
+                break
+        if fc is None:
+            continue
+        for (start, end) in attr.line_ranges:
+            range_pct = fc.coverage_for_range(start, end)
+            if range_pct is not None:
+                pcts.append(range_pct)
+    if not pcts:
+        return None
+    return round(sum(pcts) / len(pcts), 1)
 
 
 def _match_coverage(
