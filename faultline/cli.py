@@ -1,3 +1,4 @@
+import logging
 import re
 import typer
 from pathlib import Path
@@ -11,6 +12,8 @@ from faultline.analyzer.repo_classifier import classify_repo, build_layer_contex
 from faultline.output.reporter import print_report
 from faultline.output.writer import write_feature_map
 from faultline.llm.detector import _DEFAULT_OLLAMA_HOST, _DEFAULT_OLLAMA_MODEL
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="faultline",
@@ -1117,6 +1120,41 @@ def analyze(
                 sentry_project=sentry_project,
                 sentry_host=sentry_host,
             )
+
+        # 6e. Sprint 3 Day 12: populate Flow.test_files +
+        # SymbolAttribution.shared_with_flows from a single TestMap
+        # built off the existing symbol_graph. Runs only when we have
+        # both signatures (symbol graph backbone) and at least one
+        # feature with attributions — otherwise the pass is a no-op.
+        if line_attribution and signatures and shared_attributions:
+            try:
+                from faultline.analyzer.symbol_graph import build_symbol_graph
+                from faultline.analyzer.test_mapper import (
+                    apply_test_attribution, build_test_map,
+                )
+                tracked = list(get_tracked_files(str(repo.working_tree_dir)))
+                test_graph = build_symbol_graph(
+                    str(repo.working_tree_dir), tracked,
+                    include_http_edges=False,
+                )
+                test_map = build_test_map(tracked, test_graph)
+                if test_map.by_symbol or test_map.by_file:
+                    apply_test_attribution(feature_map, test_map)
+                    n_flows_with_tests = sum(
+                        1 for f in feature_map.features
+                        for fl in f.flows
+                        if fl.test_files
+                    )
+                    if n_flows_with_tests:
+                        console.print(
+                            f"[dim]Test attribution: "
+                            f"{len(test_map.by_symbol)} symbol→test mappings, "
+                            f"{n_flows_with_tests} flows with tests[/dim]"
+                        )
+            except Exception as exc:  # noqa: BLE001 — opportunistic
+                logger.warning(
+                    "test attribution skipped (%s)", exc,
+                )
 
         # 7. Print the report
         print_report(feature_map, impact_scores=impact_scores)
