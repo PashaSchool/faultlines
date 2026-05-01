@@ -121,11 +121,119 @@ _INFRA_FILENAMES = {
 }
 
 
+# Django app signature files. A directory containing __init__.py + at least
+# 2 of these is treated as a Django app (one feature per app).
+_DJANGO_APP_FILES = frozenset({
+    "models.py", "views.py", "apps.py", "urls.py", "admin.py",
+    "serializers.py", "tasks.py", "forms.py", "signals.py",
+    "permissions.py", "managers.py", "filters.py", "schema.py",
+})
+_DJANGO_MIN_SIGNATURES = 2
+_DJANGO_MIN_APPS = 4  # need ≥4 detected apps before we trust the pattern
+
+
+def _detect_django_apps(files: list[str]) -> dict[str, list[str]] | None:
+    """Detect Django/flat-package layout where each subdir is one app/feature.
+
+    Pattern: ``<root>/<app>/__init__.py`` plus 2+ Django signature files
+    in the same dir. Saleor's ``saleor/order/{models,views,apps}.py`` is
+    the canonical example.
+
+    Returns mapping ``{app_name: [files]}`` or ``None`` when the pattern
+    isn't present (fewer than ``_DJANGO_MIN_APPS`` apps detected).
+
+    Cross-package matching: files under ``<root>/graphql/<app>/*``,
+    ``<root>/dashboard/<app>/*`` etc. are routed to the matching app
+    so ``saleor/graphql/order/*.py`` joins the ``order`` feature.
+    """
+    # Map dir -> set of basenames inside (one level deep)
+    dir_files: dict[str, set[str]] = defaultdict(set)
+    for fp in files:
+        parts = Path(fp).parts
+        if len(parts) < 2:
+            continue
+        parent = "/".join(parts[:-1])
+        dir_files[parent].add(parts[-1])
+
+    # Pass 1 (strict): require ≥2 Django sig files per app to confirm
+    # that this IS a Django repo. ``site``, ``seo``, ``invoice`` etc.
+    # often have only ``models.py`` so they wouldn't pass strict alone.
+    strict_apps: dict[str, str] = {}
+    for dir_path, basenames in dir_files.items():
+        if "__init__.py" not in basenames:
+            continue
+        sigs = sum(1 for f in _DJANGO_APP_FILES if f in basenames)
+        if sigs < _DJANGO_MIN_SIGNATURES:
+            continue
+        if "settings.py" in basenames:
+            continue  # project root, not an app
+        strict_apps[dir_path] = Path(dir_path).name
+
+    if len(strict_apps) < _DJANGO_MIN_APPS:
+        return None  # Not a Django repo
+
+    # Pass 2 (relaxed): now that we confirmed Django, accept additional
+    # apps with only 1 sig file (smaller apps like ``site``, ``invoice``).
+    # Limit to dirs that share a common parent with the strict apps so
+    # we don't pull in random utility dirs.
+    strict_parents: set[str] = set()
+    for path in strict_apps:
+        parent = "/".join(Path(path).parts[:-1])
+        strict_parents.add(parent)
+
+    app_dirs: dict[str, str] = dict(strict_apps)
+    for dir_path, basenames in dir_files.items():
+        if dir_path in app_dirs:
+            continue
+        if "__init__.py" not in basenames:
+            continue
+        if "settings.py" in basenames:
+            continue
+        sigs = sum(1 for f in _DJANGO_APP_FILES if f in basenames)
+        if sigs < 1:
+            continue
+        parent = "/".join(Path(dir_path).parts[:-1])
+        if parent not in strict_parents:
+            continue  # Different package level — skip
+        app_dirs[dir_path] = Path(dir_path).name
+
+    # Build features. Phase 1: direct files under each app dir.
+    features: dict[str, list[str]] = defaultdict(list)
+    app_path_to_name = app_dirs
+    app_paths_sorted = sorted(app_path_to_name.keys(), key=len, reverse=True)
+    name_set = set(app_dirs.values())
+
+    for fp in files:
+        # Direct ownership: file under one of the app dirs
+        owned = False
+        for app_path in app_paths_sorted:
+            if fp == app_path or fp.startswith(app_path + "/"):
+                features[app_dirs[app_path]].append(fp)
+                owned = True
+                break
+        if owned:
+            continue
+        # Cross-layer matching: <root>/<layer>/<app>/* where <app> is a
+        # known app name. Catches saleor/graphql/order/ → order feature.
+        parts = Path(fp).parts
+        for i in range(1, min(len(parts) - 1, 4)):
+            cand = parts[i]
+            if cand in name_set:
+                features[cand].append(fp)
+                break
+
+    # Drop empty buckets (shouldn't happen but defensive)
+    return {k: v for k, v in features.items() if v}
+
+
 def detect_candidates(files: list[str]) -> dict[str, list[str]]:
     """
     Extracts feature candidates from file paths using structural heuristics.
 
     Strategy:
+    0. Try Django/flat-package detection first — if the repo has ≥4 dirs
+       matching the Django app signature, each app becomes a feature
+       (skips the regular anchor-based heuristic).
     1. Find "anchor" files — files in routers/, pages/, features/ etc.
        Each anchor file's stem becomes a candidate name.
     2. Find "support" files — files in services/, models/, schemas/ etc.
@@ -137,6 +245,9 @@ def detect_candidates(files: list[str]) -> dict[str, list[str]]:
         Candidates are prefixed with their top-level dir for disambiguation
         (e.g. "backend:chat", "frontend:integrations").
     """
+    django = _detect_django_apps(files)
+    if django is not None:
+        return django
     candidates: dict[str, list[str]] = defaultdict(list)
     unmatched: list[str] = []
 

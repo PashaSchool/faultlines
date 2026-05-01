@@ -172,6 +172,17 @@ def analyze(
         ),
         is_flag=True,
     ),
+    post_process: bool = typer.Option(
+        True,
+        "--post-process/--no-post-process",
+        help=(
+            "Apply post-process cleanup pipeline after feature_map is built: "
+            "merge sub-features, re-attribute noise files, refine path signal, "
+            "extract overlooked top-dirs, mine commit-prefix vocabulary, drop "
+            "noise/vendored/phantom/mega-bucket. Default ON. Pass "
+            "--no-post-process for raw scan output."
+        ),
+    ),
     incremental: bool = typer.Option(
         False,
         "--incremental",
@@ -939,6 +950,27 @@ def analyze(
         # and reports prefer display_name when present so a buyer
         # sees "Authentication" rather than "user-authentication".
         _populate_display_names(feature_map)
+
+        # 6a.7: Post-process cleanup. Runs by default (gated by
+        # ``--no-post-process`` for raw output). Applies the same
+        # transformations as scripts/cleanup_feature_map.py:
+        # merge sub-features, re-attribute noise files, refine path
+        # signal, extract overlooked top-dirs, mine commit-prefix
+        # vocabulary, drop noise/vendored/phantom/mega-bucket.
+        if post_process:
+            from faultline.analyzer.post_process import run as run_post_process
+            n_before = len(feature_map.features)
+            fl_before = sum(len(f.flows) for f in feature_map.features)
+            feature_map = run_post_process(
+                feature_map, repo_path=str(repo.working_tree_dir),
+            )
+            n_after = len(feature_map.features)
+            fl_after = sum(len(f.flows) for f in feature_map.features)
+            if n_after != n_before or fl_after != fl_before:
+                console.print(
+                    f"[dim]Post-process: features {n_before} → {n_after}, "
+                    f"flows {fl_before} → {fl_after}[/dim]"
+                )
 
         # 6b. Read coverage data (if available)
         from faultline.analyzer.coverage import read_coverage
