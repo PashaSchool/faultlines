@@ -108,6 +108,63 @@ class TestMap:
         )
 
 
+def apply_test_attribution(
+    feature_map: "FeatureMap",  # type: ignore[name-defined]
+    test_map: TestMap,
+) -> None:
+    """Populate ``Flow.test_files`` and ``SymbolAttribution.shared_with_flows``.
+
+    For each flow, collect test files that exercise any of the flow's
+    ``symbol_attributions``. Falls back to file-level test mapping when
+    the symbol isn't in ``test_map.by_symbol``.
+
+    For each ``SymbolAttribution`` (on flows AND on features), compute
+    the set of OTHER flow names within the same feature that also
+    reference at least one of the attribution's symbols. Stores the
+    sorted list on ``shared_with_flows`` for UI badging.
+
+    Mutates ``feature_map`` in place. Idempotent — running twice
+    overwrites with the same data.
+    """
+    for feature in feature_map.features:
+        # ── Per-flow: test_files ────────────────────────────────
+        # Build symbol → flows index for this feature so we can
+        # answer "which flows of this feature reference symbol X".
+        symbol_to_flows: dict[tuple[str, str], list[str]] = {}
+        for flow in feature.flows:
+            for attr in flow.symbol_attributions:
+                for sym in attr.symbols:
+                    key = (attr.file_path, sym)
+                    symbol_to_flows.setdefault(key, []).append(flow.name)
+
+        for flow in feature.flows:
+            tests: set[str] = set()
+            for attr in flow.symbol_attributions:
+                for sym in attr.symbols:
+                    tests.update(test_map.tests_for_symbol(attr.file_path, sym))
+                # Also include any file-level fallback tests
+                tests.update(test_map.by_file.get(attr.file_path, []))
+            flow.test_files = sorted(tests)
+            flow.test_file_count = len(tests)
+
+            # ── shared_with_flows on flow.symbol_attributions ──
+            for attr in flow.symbol_attributions:
+                shared: set[str] = set()
+                for sym in attr.symbols:
+                    other_flows = symbol_to_flows.get(
+                        (attr.file_path, sym), [],
+                    )
+                    shared.update(o for o in other_flows if o != flow.name)
+                attr.shared_with_flows = sorted(shared)
+
+        # ── shared_with_flows on feature.shared_attributions ──
+        for attr in feature.shared_attributions:
+            shared: set[str] = set()
+            for sym in attr.symbols:
+                shared.update(symbol_to_flows.get((attr.file_path, sym), []))
+            attr.shared_with_flows = sorted(shared)
+
+
 def build_test_map(
     all_files: list[str],
     graph: SymbolGraph,

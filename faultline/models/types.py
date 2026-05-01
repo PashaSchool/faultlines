@@ -55,6 +55,7 @@ class Flow(BaseModel):
     health_score: float        # 0-100, higher is better
     bug_fix_prs: list[PullRequest] = []
     test_file_count: int = 0   # number of test files associated with this flow
+    test_files: list[str] = []  # actual test file paths (Sprint 2 Day 10)
     weekly_points: list[TimelinePoint] = []  # weekly activity timeline
     bus_factor: int = 1                      # authors with ≥20% of flow commits
     health_trend: float | None = None        # first_half_bug_ratio - second_half; positive = improving
@@ -94,6 +95,13 @@ class SymbolAttribution(BaseModel):
     attributed_lines: int                   # total lines across all ranges
     total_file_lines: int                   # total lines in the file
     roles: dict[str, str] = {}              # {symbol_name: role}; role in {entry,handler,validator,data-fetch,state,loading-state,error-state,side-effect,ui-component,helper,type}
+    # Sprint 2 Day 10: multi-attribution badge data — names of OTHER
+    # flows (within the same feature) that also reference at least one
+    # of these symbols. UI surfaces "shared with N flows" so a reader
+    # knows the attributed code participates in multiple journeys.
+    # The bug-ratio / coverage credit is NOT split — every flow gets
+    # full credit per user spec ("a"). The badge is purely a hint.
+    shared_with_flows: list[str] = []
 
 
 class Feature(BaseModel):
