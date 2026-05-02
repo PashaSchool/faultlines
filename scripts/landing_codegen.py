@@ -153,7 +153,10 @@ def emit_feature(f: dict) -> str:
     commits = f.get("total_commits", 0)
     files = len(f.get("paths", []))
     health = round(health_score(ratio))
-    flows = (f.get("flows") or [])[:8]
+    # Emit ALL flows so the landing carousel can show every journey
+    # the scan detected. ``totalFlows`` still carries the count so the
+    # UI badge stays correct.
+    flows = list(f.get("flows") or [])
     total_flows = len(f.get("flows") or [])
 
     # Build extras object for new optional fields
@@ -227,6 +230,36 @@ REPO_META = {
         "lang": "TS monorepo · BaaS · pnpm workspace · 75k★",
         "detected": "pnpm workspace",
     },
+    "n8n": {
+        "title": "~/n8n",
+        "url": "https://github.com/n8n-io/n8n",
+        "lang": "TS monorepo · workflow automation · pnpm workspace · 70k★",
+        "detected": "pnpm workspace",
+    },
+    "dify": {
+        "title": "~/dify",
+        "url": "https://github.com/langgenius/dify",
+        "lang": "Python + TS · AI app builder · 50k★",
+        "detected": "AI workflow builder",
+    },
+    "immich": {
+        "title": "~/immich",
+        "url": "https://github.com/immich-app/immich",
+        "lang": "TS + Dart · self-hosted Photos · 50k★",
+        "detected": "self-hosted media",
+    },
+    "strapi": {
+        "title": "~/strapi",
+        "url": "https://github.com/strapi/strapi",
+        "lang": "TS · headless CMS · pnpm workspace · 62k★",
+        "detected": "headless CMS",
+    },
+    "excalidraw": {
+        "title": "~/excalidraw",
+        "url": "https://github.com/excalidraw/excalidraw",
+        "lang": "TS monorepo · virtual whiteboard · canvas-based · 90k★",
+        "detected": "virtual whiteboard",
+    },
 }
 
 
@@ -281,7 +314,11 @@ def emit_repo(slug: str) -> str:
 
 
 if __name__ == "__main__":
+    import sys
+    slugs = sys.argv[1:] if len(sys.argv) > 1 else [
+        "gitea", "ollama", "meilisearch", "saleor", "supabase",
+    ]
     out = []
-    for slug in ["gitea", "ollama", "meilisearch", "saleor", "supabase"]:
+    for slug in slugs:
         out.append(emit_repo(slug))
     print(",\n".join(out) + ",")
