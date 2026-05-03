@@ -499,19 +499,135 @@ during dev to relay live webhooks to the local server.
 
 ---
 
-## Sequencing — what to do first
+## 5-day sprint plan (Mon-Fri) — single focused week
 
-**Week 1:** GitHub App skeleton (steps 1-6) + Stripe products and DB
-schema (steps 18-20). Both can run in parallel since they touch
-different files.
+This is the compressed version of the workstreams above. Same ship
+target — production paid SaaS with cloud scans + MCP distribution
++ Sentry/PostHog observability — squeezed into one calendar week
+through ruthless scope cuts and parallel work.
 
-**Week 2:** GitHub App worker (steps 7-11) + Stripe checkout flow
-(steps 21-25). The worker is the long pole; Stripe checkout fills
-in around it.
+### Scope cuts to make 5 days work
 
-**Week 3:** MCP publishing (steps 13-17), email notifications, plan
-enforcement (steps 26-27), and end-to-end testing of all three
-workstreams together. Ship to production at the end of the week.
+| Cut | Reason |
+|---|---|
+| Slack notifications | Email-only at launch, Slack post-launch |
+| Email digest weekly schedule | Per-scan email at launch, scheduled digest post-launch |
+| Customer Portal full UX | Stripe-hosted portal only; no in-app cancellation flow |
+| Enterprise tier checkout | Manual invoicing through email |
+| Plan downgrade / proration | Subscription deletes at period end; no mid-cycle proration |
+| MCP screenshots + demo GIF | One screenshot + 30s loom; submit polished assets in week 2 |
+| Per-PR diff comments | Plain "this PR touches X features" comment; diff-based health delta in week 2 |
+| Multi-org analytics on Pro | Single-org only at launch; multi-org post-launch |
 
-Total: **~3 working weeks** for a focused solo dev to ship a paying SaaS
-with cloud scans, MCP distribution, and Stripe-backed subscriptions.
+The cuts touch UX polish, not the core path. Anyone can sign up,
+connect a repo, get a scan, see a PR comment, pay, and Faultlines
+records what they did.
+
+### Monday — GitHub App foundation
+
+| Hour | Task |
+|---|---|
+| 09-10 | Register Faultlines GitHub App on github.com/settings/apps with read-Contents + write-PullRequests permissions and `installation`/`push`/`pull_request` events; download private key, store `GH_APP_ID`, `GH_PRIVATE_KEY`, `GH_WEBHOOK_SECRET`, `GH_APP_SLUG` in env |
+| 10-12 | Migration creating `fl_gh_installations` and `fl_scan_jobs` tables in Postgres |
+| 12-13 | Lunch + coffee |
+| 13-15 | Write `lib/github-auth.ts` — App JWT (RS256, 10-min) → installation token (1-hour) with per-installation cache |
+| 15-17 | Build `/api/webhooks/github` route with HMAC-SHA256 verification + dispatcher stub (logs each event type, no handlers yet) |
+| 17-18 | Provision Fly.io worker app with empty Dockerfile, ANTHROPIC_API_KEY env, healthcheck endpoint |
+
+**Monday end-of-day:** webhook endpoint receives events, signs them,
+DB migrations live. No scans run yet.
+
+### Tuesday — Worker + scan integration
+
+| Hour | Task |
+|---|---|
+| 09-11 | Worker poll loop: SELECT FROM `fl_scan_jobs` ... `FOR UPDATE SKIP LOCKED`; idle sleep 5s |
+| 11-13 | Worker action: `git clone` with installation token + `subprocess.run("faultline analyze ...")` + capture stdout/stderr + cleanup tmpdir |
+| 13-14 | Lunch |
+| 14-16 | Webhook handler: on `installation.created` upsert installation + enqueue jobs per repo; on `push` enqueue with SHA; on `pull_request.opened/synchronize` enqueue with PR number |
+| 16-17 | After-scan hook in worker: call existing `import_scans.py` to push to DB |
+| 17-18 | First end-to-end test on a private throwaway repo |
+
+**Tuesday end-of-day:** real GitHub event triggers a worker scan
+that lands in Postgres. No PR comments yet, no payments.
+
+### Wednesday — Stripe billing
+
+| Hour | Task |
+|---|---|
+| 09-10 | Set up Stripe account (or activate existing), enable Billing + Customer Portal + Stripe Tax, capture live + test keys |
+| 10-11 | Create Stripe products + recurring prices for Team Starter ($29 locked / $49 list) and Team Pro ($99 locked / $149 list) with lookup keys |
+| 11-12 | DB migration: `fl_orgs.stripe_customer_id`, `stripe_subscription_id`, `plan`, `plan_locked_until`, `current_period_end` + `fl_billing_events` table for idempotent webhooks |
+| 12-13 | Lunch |
+| 13-14 | `/api/billing/checkout` route — accept lookup key, create Stripe Checkout Session, redirect |
+| 14-16 | `/api/webhooks/stripe` route — verify signature, dedupe by `stripe_event_id` UNIQUE, dispatch on `checkout.session.completed`, `subscription.updated`, `subscription.deleted` |
+| 16-17 | `/api/billing/portal` route — create Customer Portal session, redirect |
+| 17-18 | Wire `/settings/billing` dashboard page: current plan, usage, "Upgrade" / "Manage billing" buttons; test the full flow with a Stripe test card |
+
+**Wednesday end-of-day:** test card buys a subscription, webhook
+flips the org to "team" plan, Customer Portal works.
+
+### Thursday — MCP publishing + PR comments
+
+| Hour | Task |
+|---|---|
+| 09-10 | Polish existing `faultlines-mcp` server: tool descriptions, JSON-schema parameters, `--version`, `--help` |
+| 10-11 | Write `mcp.json` manifest at project root — name, runtime, command, homepage, tools list |
+| 11-13 | Open PRs to `cursor-ai/mcp-registry` and `modelcontextprotocol/servers` adding Faultlines under analysis / community section |
+| 13-14 | Lunch |
+| 14-16 | Worker PR comment integration: on PR-scoped scan finish, compute touched-features list, post comment via PR API with installation token |
+| 16-17 | Add plan-enforcement middleware: `org.plan === "free" && scans_this_month >= 5` returns 402 |
+| 17-18 | Resend integration for "scan complete" email per scan (replaces digest for v1) |
+
+**Thursday end-of-day:** Cursor + Anthropic PRs open, real PR
+comments fire, free tier hits the 5-scan limit, paid users skip
+the wall.
+
+### Friday — Sentry + PostHog + ship
+
+| Hour | Task |
+|---|---|
+| 09-10 | Sentry setup: install `@sentry/nextjs` in landing-app + Sentry SDK in Fly.io worker; capture release version + environment |
+| 10-11 | Sentry boundary tests: throw in `/api/webhooks/github`, `/api/webhooks/stripe`, and the worker — confirm errors land in Sentry dashboard within seconds |
+| 11-12 | PostHog setup: install `posthog-node` server-side + `posthog-js` client; track key events: `github_app_installed`, `scan_started`, `scan_finished`, `pr_comment_posted`, `checkout_started`, `subscription_created`, `feature_clicked` |
+| 12-13 | Lunch |
+| 13-14 | PostHog session replay + funnel: install → first scan → upgrade signup. Verify drop-off events match the funnel definition |
+| 14-15 | End-to-end smoke test: install app on real repo → push commit → scan completes → PR opens → comment posted → upgrade to Team → Customer Portal opens → cancel → downgrade at period end. Capture Sentry + PostHog evidence at every step |
+| 15-16 | Production deploy: Vercel (Next.js), Fly.io (worker), Postgres, all secrets via env. Run smoke test against production |
+| 16-17 | Hacker News + Twitter post when MCP listings go live; submit Faultlines to ProductHunt scheduled for next Tuesday |
+| 17-18 | Buffer / coffee / fix the one thing that's definitely broken at this point |
+
+**Friday end-of-day:** Faultlines ships with paid plans, GitHub App
+flow, MCP listing pending, and full observability via Sentry +
+PostHog. Real users can sign up and pay.
+
+### Risk register for the 5-day sprint
+
+| Risk | Mitigation |
+|---|---|
+| Cursor MCP review takes >5 days | Submit PR Thursday morning; listing goes live in week 2; we'll still have Anthropic listing for hype |
+| Stripe webhook signing fails in production | Test with `stripe listen` Wed evening; have rollback plan to delay billing release |
+| First real scan exceeds Fly.io worker memory | Cap `max-commits` to 2000 for v1, lift later; worst case fall back to local scan |
+| Sentry / PostHog noise drowns real signals | Set sample rate to 0.5 + ignore_urls on health checks; tune in week 2 |
+| Solo dev burnout | Friday afternoon is buffer; if behind, ship without PostHog session replay (Sentry alone covers errors, PH funnel can come Monday) |
+
+### What's deferred to week 2 (post-launch)
+
+- Slack integration for team notifications
+- Weekly digest email schedule (vs per-scan email)
+- Multi-org analytics on Team Pro
+- Diff-based PR comment with health delta
+- Polished MCP screenshots + 30s loom
+- Per-tier scan history retention enforcement
+- Mid-cycle Stripe proration on plan change
+- ProductHunt launch (scheduled but not Friday)
+
+---
+
+## Original 17-step breakdown (for reference)
+
+The detailed 27-step plan above the 5-day sprint stays as the
+source of truth for what each step entails — the sprint just
+collapses several of them into the same hour block. If anything in
+the sprint is unclear, the corresponding numbered step (1-27) has
+the full context.
