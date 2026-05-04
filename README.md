@@ -2,7 +2,7 @@
 
 > **Map features in any codebase from git history alone. No Jira required.**
 
-Point `faultlines` at a git repo and get back a feature map — which parts of your product accumulate the most bug fixes, who owns what, and where the risk is hiding. Works on any language, any size, any repo.
+Point `faultlines` at a git repo and get back a feature map — which parts of your product accumulate the most bug fixes, who owns what, and where the risk is hiding. Best on product applications and monorepos with real user-facing features; libraries are supported with module-level mapping (see [below](#tested-on-real-oss-repos)).
 
 [![PyPI](https://img.shields.io/pypi/v/faultlines)](https://pypi.org/project/faultlines/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/faultlines)](https://pypi.org/project/faultlines/)
@@ -302,7 +302,6 @@ Recent bugs (< 30 days) weigh 2x more than older ones, so features that are acti
 | `--llm` | off | AI-powered semantic feature detection |
 | `--flows` | off | Detect user-facing flows (requires `--llm`) |
 | `--symbols` | off | Attribute functions/classes to flows with line ranges (requires `--llm --flows`) |
-| `--push` | off | Upload feature map to Faultlines SaaS dashboard (requires `FAULTLINE_API_KEY`) |
 | `--provider` | `anthropic` | LLM provider: `anthropic` or `ollama` |
 | `--model` | auto | Model override (e.g. `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) |
 | `--api-key` | env | Anthropic API key |
