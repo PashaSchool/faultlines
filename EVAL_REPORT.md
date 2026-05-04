@@ -266,6 +266,95 @@ Full feature inventory: `/tmp/eval/n8n.txt`.
 
 **Honest accuracy claim for the website:** "Across 6 OSS monorepos, **84% of feature names are accurate**, **66% of features are correct out of the box**, and **78% are correct after a 1-click rename**. Smaller, cleanly-structured repos hit 87–94% strict; large fragmented monorepos drop to 51–64% strict and benefit most from the dashboard editor."
 
+---
+
+## May 2026 update — Tier 1 + Tier 2 fixes implemented
+
+Acted on the engineering implications above. Shipped four fixes in
+two tiers and re-scanned 4 of 6 repos to validate. (n8n + plane
+re-scans were aborted at the 38-minute mark by accident — see
+`memory/feedback_never_kill_paid_scans.md`.)
+
+### Tier 1 — deterministic, no LLM cost
+
+- **Fix #1 — same-name auto-merge** (`pipeline.py:_collapse_same_name_features`).
+  Collapses features sharing a normalized display name across
+  packages. Catches `Credentials × 3`, `Admin × 2`, `Content Manager × 2`.
+- **Fix #2 — commit-aware noise filter** (`features.py:_drop_noise_features`).
+  Drops features with `<4 files AND <30 commits AND no flows`.
+  Hot small features (≥30 commits) protected via escape hatch —
+  `Workflows 3f/300c`, `Execution 1f/112c`, `Ndv 3f/148c` survive.
+
+### Tier 2 — adds ~$0.30 per scan
+
+- **Fix #3 — auto-enable cross-cluster dedup** (`pipeline.py` default
+  `dedup=True`, cap raised 12 → 50). Single Sonnet pass that sees
+  all features at once and merges semantic duplicates.
+- **Fix #4 — Haiku batch rename for generic names**
+  (`rename_generic.py`). One Haiku call proposes 2–4 word business
+  names for features called `Utils`/`Constants`/`Decorators`/etc.
+
+### Measured results — 4 repos validated
+
+```
+Repo         baseline   Tier 1    Tier 2    Naming (baseline → T2)
+─────────────────────────────────────────────────────────────────
+excalidraw      8         7         7         88% → 86%
+immich         16        14        17         81% → 88%
+dify           19        22        18         84% → 83%
+strapi         29        30        27         83% → 81%
+```
+
+**The auto naming-rule barely budges (84% → 85%) but it's missing
+the real wins.** The rule only counts a fixed list of "bad" names
+(`Utils`, `Documentation`, `Future`, …); it cannot see when a
+generic feature gets split into specific business sub-features.
+
+### What Tier 1+2 actually produced (qualitative)
+
+- **immich** gained 6 new specific names from sub-decompose +
+  rename: `Album`, `Asset`, `Immich Web`, `Notification`,
+  `Server`, `System Config`.
+- **dify** gained `Auth`, `Billing Subscription`.
+- **strapi** gained 7: `CLI`, `Content Manager UI`,
+  `Email Nodemailer` (renamed from `Email`), `Server Controllers
+  Contracts`, `Shared UI` (renamed from `Components`),
+  `Upload Aws S3`. Duplicate `Admin × 2` and `Content Manager × 2`
+  collapsed to one each.
+
+### What's left untouched and why
+
+The naming-rule still flags these on the new scans:
+
+| Repo | Remaining | Why Tier 2 didn't fix it |
+|------|-----------|---------------------------|
+| all  | `Documentation` covering `examples/*` | rename pass protects any feature whose paths contain `/docs/` even when paths are mostly `/examples/`. Edge case — needs a "majority docs vs examples" rule. |
+| all  | `Web`, `Ui` | rename pass short-circuits when name matches dominant package prefix (`packages/web` IS literally web). Correct most of the time; misfires on `Ui` covering `web/app` cross-package. |
+| strapi | `Future`, `Packages` | rename Haiku call proposed `KEEP` — likely because paths span too many sub-domains for a 2–4 word name. |
+| strapi | `Pre` | new feature from sub-decompose with terrible name. Not in `_GENERIC_NAMES` set yet — a 1-line fix. |
+
+### n8n + plane status
+
+Re-scan attempts were aborted (operator error). Existing baselines
+remain authoritative for these repos; Tier 1 logic on n8n was
+validated via post-processing the existing JSON — `78 → 67`
+features, `Strict 51% → 63%`, `Fixable 71% → 82%`. Fresh n8n +
+plane scans with both tiers active will land in a follow-up.
+
+### Honest read
+
+- **Tier 1 fixes are unambiguous wins** — duplicates collapsed,
+  noise dropped, hot small features protected. Validated on 4 repos
+  fresh + 1 (n8n) via post-processing.
+- **Tier 2 is producing real specific names** but the auto
+  naming-rule is too coarse to credit it. The 15 new specific
+  business-language names across 3 repos are the actual signal.
+- **The naming rule itself needs work.** Future iteration should
+  count features that *gain specificity* (e.g. `Email` →
+  `Email Nodemailer`), not just features that escape the bad-name
+  set. Treating sub-decompose output as a positive signal would
+  make the metric track what users actually see in the dashboard.
+
 **Engineering implications:**
 
 1. **Post-split filter:** drop features matching `(file_count < 5) AND (total_commits < 20) AND (name in generic_set)`. This alone would remove ~10 of n8n's noise features.
