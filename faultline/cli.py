@@ -155,15 +155,16 @@ def analyze(
         is_flag=True,
     ),
     rename_generic: bool = typer.Option(
-        True,
-        "--rename-generic/--no-rename-generic",
+        False,
+        "--rename-generic",
         help=(
-            "Run a Haiku batch rename for generic feature names "
-            "(``Utils``, ``Constants``, ``Decorators``, ``Dto``, "
-            "``Backend Common``) into specific business-language names. "
-            "Default-on as Fix #4 from the Fixable-accuracy work; "
-            "adds ~$0.001 per scan. Pass --no-rename-generic to skip."
+            "Experimental Haiku batch rename for generic feature names. "
+            "Reverted from default-on (May 2026) — Haiku returned KEEP "
+            "for nearly every candidate, so the pass paid the LLM cost "
+            "without delivering renames. Kept behind opt-in flag for "
+            "future iteration with a stronger prompt or Sonnet."
         ),
+        is_flag=True,
     ),
     trace_flows: bool = typer.Option(
         False,

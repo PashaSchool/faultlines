@@ -74,7 +74,7 @@ def run(
     tool_flows: bool = False,
     critique: bool = False,
     trace_flows: bool = False,
-    rename_generic: bool = True,  # Fix #4: Haiku rename pass for generic names
+    rename_generic: bool = False,  # Fix #4: REVERTED — Haiku too conservative
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -288,22 +288,15 @@ def run(
                 before, after, before - after,
             )
 
-    # Stage 1.55 (Fix #4 from Fixable-accuracy work): Rename generic
-    # feature names. Hits features named ``Utils``/``Constants``/
-    # ``Decorators``/``Dto``/``Backend Common``/etc that describe
-    # something *technically* but not *for the product*. One Haiku
-    # batch call (~$0.001 per scan) proposes 2–4 word business names.
-    # Runs after dedup so duplicates are already collapsed; runs
-    # before sub_decompose so freshly-named parents go into split
-    # decisions with their improved labels.
-    if rename_generic:
-        from faultline.llm.rename_generic import rename_generic_features
-        result = rename_generic_features(
-            result,
-            api_key=api_key,
-            model=None,  # let module pick Haiku default
-            tracker=tracker,
-        )
+    # Stage 1.55 was a Haiku batch rename for generic feature names
+    # (Fix #4 from Fixable-accuracy work). Reverted May 2026 after
+    # validation across 4 repos showed Haiku returned ``KEEP`` on
+    # every flagged feature — the candidate-selection logic was
+    # right, but the model was too conservative to actually rename
+    # anything. Naming auto-rule moved -1pp net. The module
+    # ``faultline.llm.rename_generic`` and its tests stay in tree
+    # for future iteration (stronger prompt, Sonnet, or LLM-as-
+    # judge approach), but it's no longer wired into ``run()``.
 
     # Stage 1.6: Apply user-supplied .faultline.yaml from repo root.
     # Always runs (no flag) so users can opt in by simply dropping a
