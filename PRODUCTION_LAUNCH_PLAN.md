@@ -499,7 +499,23 @@ during dev to relay live webhooks to the local server.
 
 ---
 
-## 5-day sprint plan (Mon-Fri) — single focused week
+## 2-week sprint plan (Mon-Fri × 2) — full launch with team features
+
+Two-week plan splitting "core SaaS rails" (week 1) from "team
+collaboration + observability surface area we promised on the
+pricing page" (week 2). Testing is baked into every day rather
+than concentrated on a single Friday — each day ends with a
+verifiable end-of-day milestone, and weeks end with a buffer +
+hardening block.
+
+**Why two weeks instead of one:** the pricing-page feature
+comparison advertises Slack digests, health trends, outbound
+webhooks, and audit logs as Pro-tier features. Shipping without
+them lets the first paying customer catch us in a lie. User
+confirmed: "не хочу без них стартувати" — bundle them into the
+launch sprint, don't ship after.
+
+# Week 1 — Core SaaS rails
 
 This is the compressed version of the workstreams above. Same ship
 target — production paid SaaS with cloud scans + MCP distribution
@@ -611,16 +627,148 @@ PostHog. Real users can sign up and pay.
 | Sentry / PostHog noise drowns real signals | Set sample rate to 0.5 + ignore_urls on health checks; tune in week 2 |
 | Solo dev burnout | Friday afternoon is buffer; if behind, ship without PostHog session replay (Sentry alone covers errors, PH funnel can come Monday) |
 
-### What's deferred to week 2 (post-launch)
+### What's deferred from week 1 to week 2
 
-- Slack integration for team notifications
-- Weekly digest email schedule (vs per-scan email)
-- Multi-org analytics on Team Pro
-- Diff-based PR comment with health delta
-- Polished MCP screenshots + 30s loom
-- Per-tier scan history retention enforcement
+These are the features promised on the pricing-page comparison
+table that don't fit week 1 — they form the bulk of week 2.
+
+- Slack OAuth + Block Kit digest sending
+- Microsoft Teams via incoming webhook URL
+- Email digest weekly schedule (vs per-scan email from week 1)
+- Outbound webhooks (signed POST + retry, not GitHub App inbound)
+- Audit logs (table, writer middleware, viewer page)
+- Health trends over time (multi-scan diff + chart)
+- Subscriptions to specific features / flows (the "team subscribes
+  to feature X" idea from the dashboard)
+- Diff-based PR comment with health delta (week 1 ships plain
+  "this PR touches X features")
+- Polished MCP screenshots + 30s loom asset
+- Per-tier scan history retention enforcement (90d / 1y / unlimited)
 - Mid-cycle Stripe proration on plan change
-- ProductHunt launch (scheduled but not Friday)
+- ProductHunt launch (scheduled for week 2 Tuesday)
+
+# Week 2 — Team features + hardening
+
+Same Mon-Fri shape. Each day ships one major feature end-to-end
+with its tests; Friday is a hardening + ProductHunt day rather
+than another feature day. Goal: by Friday-EOD week 2, every row
+on the pricing-page Feature comparison is real, not aspirational.
+
+### Monday — Audit logs + outbound webhooks
+
+| Hour | Task |
+|---|---|
+| 09-10 | Migration: `fl_audit_log (id, org_id, actor_user_id, action, resource_type, resource_id, ip, user_agent, ts, metadata jsonb)` + index on `(org_id, ts DESC)` |
+| 10-12 | Audit-log writer: middleware in Next.js API routes that records mutating actions (subscription change, webhook create, member invite, plan change). Read-only routes skipped. |
+| 12-13 | Lunch |
+| 13-15 | Migration + UI: `fl_webhook_endpoints (id, org_id, url, secret, events text[], created_at, last_delivery_at, last_status)` + `/dashboard/settings/webhooks` page (create / revoke / view recent deliveries) |
+| 15-17 | Outbound webhook delivery: HMAC-SHA256 signed POST, 5-second timeout, 3 retries with exponential backoff, dead-letter to `fl_webhook_failures`. Trigger from `scan.completed`, `feature.health_changed` events. |
+| 17-18 | **Test:** trigger a scan → check audit log row appears, webhook fires to webhook.site, signature verifies. Throw mid-delivery → confirm retry + DLQ. |
+
+**Monday EOD:** every mutating action writes audit row; webhook
+endpoints can be created and receive signed events.
+
+### Tuesday — Health trends over time
+
+| Hour | Task |
+|---|---|
+| 09-11 | Backfill: ensure historical scans persist (week 1 already stores them). Add `feature_health_history` materialized view: `(feature_id, scan_id, scan_date, health_score, bug_fix_ratio, total_commits)`. Refresh on each scan import. |
+| 11-13 | API: `GET /api/features/[id]/history?days=90` returning `[{scanDate, health, ratio, commits}]`. Cache 5 min via `Cache-Control: s-maxage=300`. |
+| 13-14 | Lunch |
+| 14-16 | UI: install Recharts, build `<HealthTrendChart>` component on `/dashboard/features/[id]` — line chart of health over time with hover tooltip showing scan date + delta vs previous scan. |
+| 16-17 | Empty / sparse state: feature with <2 scans renders "Need 2+ scans to show trend" placeholder, not a broken chart. |
+| 17-18 | **Test:** Playwright run — navigate to a feature with 5+ scans, screenshot the chart, assert tooltip on hover. Run against ghost + cal.com fixtures (both have history). |
+
+**Tuesday EOD:** every feature page shows historical health
+trend; "Health trends over time" pricing-row no longer aspirational.
+
+### Wednesday — Slack OAuth + Microsoft Teams webhook
+
+| Hour | Task |
+|---|---|
+| 09-10 | Slack app registration on api.slack.com/apps with `chat:write`, `incoming-webhook`, `channels:read` scopes. Capture `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`. |
+| 10-12 | OAuth flow: `/api/integrations/slack/install` redirects to Slack → `/api/integrations/slack/callback` exchanges code → store team_id + access_token + bot_user_id + selected channel in `fl_integrations` table. |
+| 12-13 | Lunch |
+| 13-14 | Block Kit digest renderer: `renderHotspotDigest(features) → SlackBlocks` with a header, top-3 hotspots as section blocks with health bars (Unicode ▁▂▃▅█), CTA button to dashboard. |
+| 14-16 | Microsoft Teams: simpler — paste-in incoming webhook URL form on `/dashboard/settings/integrations`. Adaptive Card renderer mirrors Block Kit shape. |
+| 16-17 | Send-test: "Send test digest" button on integration settings → posts a sample digest to verify wiring before real cron fires. |
+| 17-18 | **Test:** install Slack app on dogfood workspace → channel selection → click send-test → verify message renders correctly. Same for Teams via webhook URL. |
+
+**Wednesday EOD:** Slack + Teams both deliver formatted digests on
+demand; cron-triggered sending arrives Thursday.
+
+### Thursday — Subscriptions + cron worker
+
+| Hour | Task |
+|---|---|
+| 09-10 | Migration: `fl_subscriptions (id, org_id, user_id, target_kind enum('feature','flow','org'), target_id, channel enum('email','slack','teams'), frequency enum('daily','weekly','on_change'), last_sent_at, created_at)` |
+| 10-12 | Subscription UI: on every `/dashboard/features/[id]` and `/dashboard/flows/[id]` page add a "Subscribe" button → modal with channel toggle (email default-on, Slack/Teams enabled if integration connected) + frequency radio. List subscriptions on `/dashboard/settings/subscriptions`. |
+| 12-13 | Lunch |
+| 13-15 | Cron worker: Vercel Cron (`vercel.ts` schedule `"0 9 * * *"`) → `/api/cron/digests` route. Query `fl_subscriptions WHERE due(frequency, last_sent_at)`. For each row: fetch latest data → render → dispatch via channel router. |
+| 15-16 | `on_change` frequency: separate trigger from `scan.completed` event handler — diff prev vs new health, send only if delta > threshold (5 points or status flip). |
+| 16-17 | Email channel: Resend integration with React Email template for digest (reuse Slack Block Kit shape, render to HTML). |
+| 17-18 | **Test:** subscribe self to a feature on email + Slack (both `daily`) → manually invoke cron route in dev → verify both channels receive identical content. Subscribe to `on_change` → trigger fake scan with bumped bug ratio → verify only `on_change` subscriber gets pinged. |
+
+**Thursday EOD:** every promised channel × frequency combination
+works end-to-end; pricing-page "Slack digests" row real.
+
+### Friday — Hardening, E2E, ProductHunt launch
+
+| Hour | Task |
+|---|---|
+| 09-11 | Full E2E Playwright suite covering both weeks: install GitHub App → push commit → scan → PR comment → upgrade to Team via Stripe → audit log entry written → subscribe to feature → fake scan completes → digest delivered to email + Slack → cancel subscription via Customer Portal → downgrade at period end. |
+| 11-12 | Sentry + PostHog hardening: review week 1's noisy alerts, tune sample rates, add ignore-rules for health checks. Add release annotation for week-2 deploy. Confirm session replay captures the new subscription + integration flows. |
+| 12-13 | Lunch |
+| 13-14 | Documentation: README updated with screenshot of feature page health trend, Slack digest, audit log viewer. CHANGELOG entry covering the week's features. Pricing page comparison reviewed row-by-row against shipped reality (every "yes" must be defensible). |
+| 14-15 | Load test: kick off concurrent scans on 5 throwaway repos via the Fly.io worker, watch Postgres `FOR UPDATE SKIP LOCKED` queue depth, verify Sentry catches any timeouts. Tune worker concurrency cap if needed. |
+| 15-16 | Production deploy: full week-2 release. Smoke-test all promised pricing-page features against production with a real Stripe test card. |
+| 16-17 | ProductHunt launch goes live (scheduled for Tuesday but published Friday afternoon for weekend traction). Hacker News + Twitter posts. Notify week-1 early-bird signups via email. |
+| 17-18 | Buffer / fix the one thing that broke during launch / coffee. |
+
+**Friday EOD week 2:** Faultlines ships at full feature parity with
+the pricing page; every comparison-table row backed by code in
+production; ProductHunt live.
+
+### Testing strategy across both weeks
+
+Tests aren't a separate day-block — every feature gets a test
+within the same day's hour budget:
+
+| Layer | When | What |
+|---|---|---|
+| Unit | Throughout | Hour-budget within each day; catch logic bugs at the function level |
+| Integration | EOD each day | The "**Test:**" line in each day above; runs against real Postgres + real Stripe test mode + real Slack dogfood workspace |
+| E2E (Playwright) | Friday week 2 | Full install → scan → upgrade → subscribe → digest flow |
+| Load | Friday week 2 | 5 concurrent scans on Fly.io worker |
+| Manual smoke | Both Fridays + after every prod deploy | Buy a sub with a Stripe test card, install GH App on a private repo, verify a digest arrives |
+
+Sentry + PostHog are the always-on observers — week 1 wires
+them, week 2 hardens them.
+
+### Risk register for the 2-week sprint
+
+| Risk | Mitigation |
+|---|---|
+| Slack OAuth review takes longer than expected | Slack apps in development mode work for any workspace — review only required for distribution. We don't need distribution week 1; we ship for known orgs only and submit for review week 3 |
+| Subscription cron misfires (sends digest twice) | `last_sent_at` updated in same transaction as send; cron uses `FOR UPDATE SKIP LOCKED` on the subscription row |
+| Outbound webhook DLQ silently fills | `/dashboard/settings/webhooks` shows last delivery + 7-day failure count; Sentry alert on DLQ depth > 100 |
+| Health-trend chart breaks on features with 1 scan | Empty state handled Tuesday; verified via fixtures with 1, 2, and 50 scans |
+| ProductHunt traffic crashes Fly.io worker | Pre-warm 2 worker instances Friday morning; rate-limit `/api/billing/checkout` to 30 rpm; static-render landing |
+| Solo dev burnout across 10 working days | Friday week 2 has buffer hour 17-18; if week 1 slips, cut "Diff-based PR comment" from Thursday week 1 (it's already deferred to v2 in the cuts) |
+
+### What's deferred from week 2 to v3 (post-launch)
+
+- Slack app distribution review (week 1-2 ships in dev mode; submit
+  for full distribution week 3 once we have real install metrics)
+- MS Teams native app (week 2 ships incoming-webhook only)
+- Audit log retention auto-purge after 90 days (column added,
+  cleanup cron later)
+- Webhook secret rotation UI with grace period (basic create/revoke
+  ships week 2; rotation later)
+- Health trend hourly granularity (daily ships week 2)
+- Multi-org analytics on Team Pro
+- Mid-cycle Stripe proration on plan change
+- Polished MCP demo GIF (week 1 submits with screenshot only)
 
 ---
 
