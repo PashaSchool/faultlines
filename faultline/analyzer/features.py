@@ -977,6 +977,78 @@ def _collect_prs(commits: list[Commit], remote_url: str) -> list[PullRequest]:
 _MIN_FEATURE_FILES = 3     # features with fewer files get merged into a parent
 _MIN_FEATURE_COMMITS = 2   # features with fewer commits get merged into a parent
 
+# Fix #2 (commit-aware noise filter) thresholds. A feature is dropped to
+# shared-infra only when ALL three hold: <4 files AND <30 commits AND no
+# flows. The 30-commit escape hatch protects hot small features (n8n's
+# Workflows 3f/300c, Ndv 3f/148c, Execution 1f/112c). The 4-file ceiling
+# is the sweet spot from eval — features with ≥4 files survive even at
+# low commit counts because they likely represent a real package surface.
+_NOISE_MAX_FILES = 4
+_NOISE_HOT_COMMITS = 30
+_NOISE_PROTECTED_BUCKETS = frozenset({"shared-infra", "documentation", "examples"})
+
+
+def _drop_noise_features(
+    features: list["Feature"],
+    flows_by_feature: dict[str, list[str]] | None = None,
+) -> list["Feature"]:
+    """Drop tiny-and-cold features into ``shared-infra``.
+
+    Closes Class B failures from the Fixable-accuracy eval — features
+    like n8n's ``Di`` (1f/14c), ``Push`` (3f/14c), ``Chat`` (2f/6c) and
+    ``TypeScript Config`` (2f/6c) survive deep_scan_workspace's
+    per-package output without commit-aware filtering. The existing
+    ``_merge_noise_singletons`` pass in sonnet_scanner only catches
+    1-file zero-flow features; this is the post-build commit-aware
+    version that runs once total_commits is computed.
+
+    Drop rule: ``len(paths) < 4 AND total_commits < 30 AND no flows``.
+    Hot small features survive on either ≥30 commits OR ≥1 flow.
+
+    Flows are read from ``feat.flows`` first (post-flow-injection path)
+    and fall back to the optional ``flows_by_feature`` dict (used by
+    early-pipeline callers that haven't injected flows yet).
+    """
+    flows_dict = flows_by_feature or {}
+
+    keep: list[Feature] = []
+    dropped_paths: set[str] = set()
+
+    for feat in features:
+        if feat.name in _NOISE_PROTECTED_BUCKETS:
+            keep.append(feat)
+            continue
+        is_tiny = len(feat.paths) < _NOISE_MAX_FILES
+        is_cold = feat.total_commits < _NOISE_HOT_COMMITS
+        has_flows = bool(getattr(feat, "flows", None) or flows_dict.get(feat.name))
+        if is_tiny and is_cold and not has_flows:
+            dropped_paths.update(feat.paths)
+            continue
+        keep.append(feat)
+
+    if not dropped_paths:
+        return keep
+
+    # Re-fold dropped paths into shared-infra (create or extend)
+    existing_infra = next((f for f in keep if f.name == "shared-infra"), None)
+    if existing_infra is not None:
+        merged = sorted(set(existing_infra.paths) | dropped_paths)
+        existing_infra.paths = merged
+    else:
+        from datetime import datetime, timezone
+        keep.append(Feature(
+            name="shared-infra",
+            paths=sorted(dropped_paths),
+            authors=[],
+            total_commits=0,
+            bug_fixes=0,
+            bug_fix_ratio=0.0,
+            last_modified=datetime.now(tz=timezone.utc),
+            health_score=100.0,
+        ))
+
+    return keep
+
 
 def _merge_small_features(
     feature_paths: dict[str, list[str]],

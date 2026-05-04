@@ -245,6 +245,17 @@ def run(
     # then aliases it to a real canonical, taking precedence).
     _auto_fold_tooling(result)
 
+    # Stage 1.45: Same-name auto-merge. When per-package Sonnet calls
+    # in ``deep_scan_workspace`` independently produce the same display
+    # name across packages (n8n's ``Credentials`` × 3 across cli/core/
+    # nodes-base, strapi's ``Admin`` × 2, ``Content Manager`` × 2),
+    # the merge phase concatenates them as separate entries. This
+    # deterministic pass folds same-named features by union of paths,
+    # picking the variant with the most paths as canonical. Always
+    # runs — no LLM cost, no flag, fixes the obvious case before the
+    # opt-in semantic ``dedup`` ever runs.
+    result = _collapse_same_name_features(result)
+
     # Stage 1.5 (Sprint 2): Cross-cluster dedup — collapse semantically
     # identical features that ended up split across packages (e.g. on
     # documenso "lib/document-signing" + "remix/document-signing" +
@@ -456,6 +467,73 @@ def run(
         except Exception as exc:  # noqa: BLE001 — opportunistic
             logger.warning("pipeline: save_assignments failed (%s)", exc)
 
+    return result
+
+
+_PROTECTED_BUCKETS = frozenset({"shared-infra", "documentation", "examples"})
+
+
+def _collapse_same_name_features(result: DeepScanResult) -> DeepScanResult:
+    """Merge features that share a normalized display name.
+
+    Workspace per-package scans frequently produce the same business
+    name across multiple packages — n8n's ``Credentials`` appears in
+    cli/core/nodes-base; strapi's ``Admin`` and ``Content Manager``
+    each appear twice. The opt-in semantic ``dedup`` pass would catch
+    these, but only if explicitly enabled. This deterministic pre-pass
+    fixes the obvious case (exact name match, case-insensitive) for
+    every scan with no LLM cost.
+
+    Canonical pick rule: the variant with the most paths wins; on tie,
+    alphabetical name order. Paths are union'd, deduplicated, and
+    sorted so two consecutive runs produce byte-identical output.
+
+    Synthetic buckets (``shared-infra``, ``documentation``, ``examples``)
+    are never merge candidates even if they happened to coincide.
+    """
+    by_norm: dict[str, list[str]] = {}
+    for name in result.features:
+        if name in _PROTECTED_BUCKETS:
+            continue
+        norm = name.strip().lower()
+        by_norm.setdefault(norm, []).append(name)
+
+    if all(len(v) == 1 for v in by_norm.values()):
+        return result  # no duplicates to collapse
+
+    collapsed = 0
+    for norm, names in sorted(by_norm.items()):
+        if len(names) <= 1:
+            continue
+        # Canonical: most paths wins, alphabetical tiebreak (deterministic)
+        canonical = max(names, key=lambda n: (len(result.features[n]), -ord(n[0]) if n else 0))
+        # Alphabetical tiebreak: re-sort if multiple names tie on path count
+        max_paths = len(result.features[canonical])
+        tied = [n for n in names if len(result.features[n]) == max_paths]
+        if len(tied) > 1:
+            canonical = sorted(tied)[0]
+
+        # Union all paths, dedupe, sort
+        all_paths: set[str] = set()
+        for n in names:
+            all_paths.update(result.features[n])
+        result.features[canonical] = sorted(all_paths)
+
+        # Drop the non-canonical entries from every side channel
+        for n in names:
+            if n == canonical:
+                continue
+            result.features.pop(n, None)
+            result.descriptions.pop(n, None)
+            result.flows.pop(n, None)
+            result.flow_descriptions.pop(n, None)
+            collapsed += 1
+
+    if collapsed:
+        logger.info(
+            "pipeline: collapsed %d same-name duplicate feature(s)",
+            collapsed,
+        )
     return result
 
 

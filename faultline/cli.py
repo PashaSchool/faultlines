@@ -1026,6 +1026,24 @@ def analyze(
                 ),
             )
 
+        # 6a.55: Commit-aware noise drop (Fix #2 from Fixable-accuracy
+        # eval). Folds tiny-and-cold features (<4 files AND <30 commits
+        # AND no flows) into shared-infra. The 30-commit escape hatch
+        # protects hot small features like n8n's Workflows (3f/300c).
+        # Runs always — independent of --post-process — because it's a
+        # basic safety filter, not a transformation. Closes ~6 noise
+        # features on n8n / strapi without touching legitimate slices.
+        from faultline.analyzer.features import _drop_noise_features
+        _n_before_noise = len(feature_map.features)
+        feature_map.features = _drop_noise_features(feature_map.features)
+        _n_after_noise = len(feature_map.features)
+        if _n_after_noise < _n_before_noise:
+            console.print(
+                f"[dim]Noise filter: dropped {_n_before_noise - _n_after_noise} "
+                f"tiny+cold feature(s) into shared-infra "
+                f"({_n_before_noise} → {_n_after_noise})[/dim]"
+            )
+
         # 6a.6: Populate Title Case display_name on every feature +
         # flow. Internal slug-form name stays untouched — it's the
         # stable ID used for dedup / config / API lookups. Dashboards
