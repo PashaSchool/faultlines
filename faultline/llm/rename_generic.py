@@ -58,6 +58,7 @@ _GENERIC_NAMES: frozenset[str] = frozenset({
     "maintenance",
     "platform infrastructure",
     "platform primitives",
+    "pre",  # added May 2026 — surfaced on strapi from sub-decompose
     "scenarios",
     "scripts front",
     "search analytics & platform",
@@ -149,9 +150,16 @@ def _select_candidates(
         # ``Utils`` covering ``packages/utils/*`` is OK — skip
         if _name_matches_dominant_path(name, paths):
             continue
-        # ``documentation`` is only generic when paths aren't actually docs
-        if norm == "documentation" and any("/docs/" in p or p.startswith("docs/") for p in paths):
-            continue
+        # ``documentation`` is only generic when paths aren't actually docs.
+        # Originally: skip if ANY path under docs/. That was too aggressive —
+        # excalidraw + strapi have a Documentation feature whose paths are
+        # mostly examples/* with one stray docs/* file, and the previous rule
+        # protected it from rename. Switched to MAJORITY: only skip when
+        # >50% of paths are under docs/.
+        if norm == "documentation":
+            docs_count = sum(1 for p in paths if "/docs/" in p or p.startswith("docs/"))
+            if docs_count > len(paths) / 2:
+                continue
         out.append((name, list(paths)))
         if len(out) >= MAX_RENAMES_PER_PASS:
             break

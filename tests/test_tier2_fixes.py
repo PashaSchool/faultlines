@@ -95,6 +95,31 @@ class TestSelectCandidates:
         names = {n for n, _ in candidates}
         assert "Documentation" in names
 
+    def test_documentation_mostly_examples_with_one_docs_file_is_candidate(self):
+        # Regression for the May 2026 over-protection bug: previously ANY
+        # /docs/ path saved the feature from rename, even when 27 of 28
+        # paths were examples/*. Now it's a majority rule.
+        result = _ds({
+            "Documentation": [
+                "docs/intro.md",  # one stray docs file
+                *[f"examples/with-nextjs/app{i}.tsx" for i in range(10)],
+                *[f"examples/with-script/x{i}.ts" for i in range(10)],
+            ],
+        })
+        candidates = _select_candidates(result)
+        names = {n for n, _ in candidates}
+        assert "Documentation" in names
+
+    def test_pre_in_generic_names(self):
+        # "Pre" appeared from sub-decompose on strapi. 2-letter, no business
+        # meaning. Should be a candidate now.
+        result = _ds({
+            "Pre": ["packages/core/pre/a.ts", "packages/core/pre/b.ts"],
+        })
+        candidates = _select_candidates(result)
+        names = {n for n, _ in candidates}
+        assert "Pre" in names
+
     def test_specific_names_skipped(self):
         # Already-specific names should not appear as candidates
         result = _ds({
