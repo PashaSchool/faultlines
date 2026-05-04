@@ -69,11 +69,12 @@ def run(
     commit_context_days: int = 90,
     use_tools: bool = False,
     repo_root=None,  # pathlib.Path; required when use_tools=True
-    dedup: bool = False,
+    dedup: bool = True,  # Fix #3: auto-on (was opt-in via --dedup)
     sub_decompose: bool = False,
     tool_flows: bool = False,
     critique: bool = False,
     trace_flows: bool = False,
+    rename_generic: bool = True,  # Fix #4: Haiku rename pass for generic names
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -262,6 +263,15 @@ def run(
     # "trpc/document-signing" all describe the same product domain).
     # Runs BEFORE the docs/infra synthetic buckets are materialized
     # so those protected names never appear in the dedup input.
+    #
+    # Was opt-in (--dedup flag); promoted to always-on as Fix #3 from
+    # the Fixable-accuracy work. Stage 1.45 (_collapse_same_name) now
+    # handles exact duplicates deterministically with no LLM cost; the
+    # remaining job for dedup is the harder semantic case (n8n's
+    # Editor / Workflow Sdk / Workflow Index, dify's Workflow App /
+    # Workflow / Web / Ui). Cap raised to 50 (was 12) to handle the
+    # n8n-scale fragmentation. Caller can opt out by passing
+    # ``dedup=False`` if they need to skip the LLM call.
     if dedup:
         from faultline.llm.dedup import dedup_features
         before = len(result.features)
@@ -277,6 +287,23 @@ def run(
                 "pipeline: dedup collapsed %d → %d features (-%d)",
                 before, after, before - after,
             )
+
+    # Stage 1.55 (Fix #4 from Fixable-accuracy work): Rename generic
+    # feature names. Hits features named ``Utils``/``Constants``/
+    # ``Decorators``/``Dto``/``Backend Common``/etc that describe
+    # something *technically* but not *for the product*. One Haiku
+    # batch call (~$0.001 per scan) proposes 2–4 word business names.
+    # Runs after dedup so duplicates are already collapsed; runs
+    # before sub_decompose so freshly-named parents go into split
+    # decisions with their improved labels.
+    if rename_generic:
+        from faultline.llm.rename_generic import rename_generic_features
+        result = rename_generic_features(
+            result,
+            api_key=api_key,
+            model=None,  # let module pick Haiku default
+            tracker=tracker,
+        )
 
     # Stage 1.6: Apply user-supplied .faultline.yaml from repo root.
     # Always runs (no flag) so users can opt in by simply dropping a

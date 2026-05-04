@@ -40,10 +40,14 @@ DEFAULT_MAX_TOKENS = 8_192
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_SAMPLE_PATHS = 5
 # Hard cap on merges per pass. Prevents the model from collapsing the
-# whole feature map into a small handful of mega-features. Calibrated
-# at 12 — more than enough for the real cases seen on documenso (5
-# document-signing siblings) and formbricks (~3 survey siblings).
-MAX_MERGES_PER_PASS = 12
+# whole feature map into a small handful of mega-features. Original
+# calibration at 12 was tight for documenso (5 document-signing
+# siblings) and formbricks (~3 survey siblings). Bumped to 50 for n8n
+# scale: 5 workflow-concept fragments + 3 credentials + 2 mcp-browser
+# + 3 codemirror lang + ~10 other near-duplicates from a 78-feature
+# scan benefit from a higher ceiling without the model going wild
+# (it still has to justify each merge on shared paths/concepts).
+MAX_MERGES_PER_PASS = 50
 
 # Synthetic buckets that must never be touched by the merge pass.
 # documentation collapses every doc bucket; shared-infra holds repo

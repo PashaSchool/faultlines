@@ -109,15 +109,17 @@ def analyze(
         is_flag=True,
     ),
     dedup: bool = typer.Option(
-        False,
-        "--dedup",
+        True,
+        "--dedup/--no-dedup",
         help=(
-            "Sprint 2 (experimental): after per-package detection, run a "
-            "single Sonnet pass that sees every feature at once and merges "
-            "semantic duplicates split across packages (e.g. five "
-            "document-signing-* features → one). Adds ~$0.30 per scan."
+            "Run a single Sonnet pass that sees every feature at once and "
+            "merges semantic duplicates split across packages (e.g. five "
+            "document-signing-* features → one). Promoted from opt-in "
+            "(Sprint 2) to default-on as Fix #3 from the Fixable-accuracy "
+            "work — closes the workflow-concept-fragmentation gap that "
+            "Fix #1 (deterministic same-name merge) cannot reach. Adds "
+            "~$0.30 per scan; pass --no-dedup to skip."
         ),
-        is_flag=True,
     ),
     sub_decompose: bool = typer.Option(
         False,
@@ -151,6 +153,17 @@ def analyze(
             "renames per scan. Adds ~$0.50-1.00 per scan."
         ),
         is_flag=True,
+    ),
+    rename_generic: bool = typer.Option(
+        True,
+        "--rename-generic/--no-rename-generic",
+        help=(
+            "Run a Haiku batch rename for generic feature names "
+            "(``Utils``, ``Constants``, ``Decorators``, ``Dto``, "
+            "``Backend Common``) into specific business-language names. "
+            "Default-on as Fix #4 from the Fixable-accuracy work; "
+            "adds ~$0.001 per scan. Pass --no-rename-generic to skip."
+        ),
     ),
     trace_flows: bool = typer.Option(
         False,
@@ -592,6 +605,7 @@ def analyze(
                         tool_flows=tool_flows,
                         critique=critique,
                         trace_flows=trace_flows,
+                        rename_generic=rename_generic,
                     )
                 except Exception as exc:  # pragma: no cover - surfacing guidance
                     console.print(
