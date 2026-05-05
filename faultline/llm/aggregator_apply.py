@@ -374,31 +374,32 @@ def apply_classifications(
         locks.add(largest)
 
     # Phase 1+2: handle aggregators
+    #
+    # The size/commit guards from _is_too_large_to_fold do NOT apply
+    # here — real shared-aggregator packages (n8n's Dto with 78f,
+    # dify's Contracts with 142f, even larger ones on bigger repos)
+    # are routinely over the 50-file fold cap. The cap is for
+    # dev-internal/tooling-infra folds (locales, fixtures —
+    # genuinely small areas). For aggregator redistribution the
+    # only structural safety net is the largest-feature lock so
+    # the main product code can never be scattered as participants.
     aggregator_names = [
         name for name, v in classifications.items()
         if v.classification == "shared-aggregator"
         and v.confidence >= confidence_floor
         and name in result.features
         and name not in locks
-        and not _is_too_large_to_fold(
-            name, result.features[name], commit_counts,
-        )
     ]
     skipped_aggregators = [
         name for name, v in classifications.items()
         if v.classification == "shared-aggregator"
         and v.confidence >= confidence_floor
         and name in result.features
-        and (
-            name in locks
-            or _is_too_large_to_fold(
-                name, result.features[name], commit_counts,
-            )
-        )
+        and name in locks
     ]
     for skipped in skipped_aggregators:
         logger.info(
-            "aggregator_apply: refused to fold %s (size/commit/lock guard)",
+            "aggregator_apply: refused to redistribute %s (locked — likely main product code)",
             skipped,
         )
     for aggregator_name in aggregator_names:

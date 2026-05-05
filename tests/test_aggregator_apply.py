@@ -478,10 +478,13 @@ class TestStructuralGuards:
         assert "Excalidraw" in result.features
         assert len(result.features["Excalidraw"]) == 484
 
-    def test_large_feature_refused_as_aggregator(self):
-        # 484-file feature classified as shared-aggregator must NOT
-        # be redistributed — that would scatter the main product
-        # across other features.
+    def test_largest_feature_refused_as_aggregator_via_lock(self):
+        # The 484-file Excalidraw library is the LARGEST feature
+        # → locked → aggregator redistribution refused. The main
+        # product code is never scattered across other features.
+        # (Pure size-cap was removed for aggregators — real shared-
+        # schema packages can be 100+ files. The lock catches the
+        # largest-feature-as-aggregator misclassification specifically.)
         result = _ds(features={
             "Excalidraw": [f"packages/excalidraw/file_{i}.ts" for i in range(484)],
             "Math": ["packages/math/index.ts"],
@@ -503,6 +506,38 @@ class TestStructuralGuards:
         assert "Excalidraw" in result.features
         # No participants accidentally added to Math
         assert result.shared_participants_map.get("Math", []) == []
+
+    def test_medium_aggregator_redistributes_normally(self):
+        # 142-file Contracts (canonical aggregator size — n8n's Dto
+        # at 78f, dify's Contracts at 142f). Pre-fix the size cap
+        # blocked this; now only the largest-feature lock applies
+        # and Contracts isn't largest, so redistribution fires.
+        result = _ds(features={
+            "MainApp": [f"src/app/file_{i}.ts" for i in range(800)],  # largest
+            "Contracts": [f"packages/contracts/dto_{i}.ts" for i in range(142)],
+            "Authentication": ["src/auth/login.tsx"],
+        })
+        classifications = {
+            "Contracts": _cls(
+                feature_name="Contracts",
+                classification="shared-aggregator",
+                confidence=5,
+                consumer_features=["Authentication"],
+            ),
+        }
+        consumer_maps = {
+            "Contracts": {
+                f"packages/contracts/dto_{i}.ts": ["Authentication"]
+                for i in range(142)
+            },
+        }
+        apply_classifications(result, classifications, consumer_maps)
+        # Contracts redistributed
+        assert "Contracts" not in result.features
+        # Authentication received participants
+        assert len(result.shared_participants_map["Authentication"]) == 142
+        # MainApp untouched
+        assert "MainApp" in result.features
 
     def test_high_commit_feature_refused_as_dev_internal(self):
         # 200+ commits = active maintenance area = real feature
