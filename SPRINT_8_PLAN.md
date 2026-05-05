@@ -303,3 +303,58 @@ If Sprint 8 produces worse numbers in eval:
   change is acceptable before locking it in
 - Cost guardrail: never run a paid scan in CI; manual scans only
   with explicit budget
+
+## Status (pause point — May 5 2026)
+
+Days 1–5 done; Day 6 (CTO-readable rename pass + promotion to
+default-on) deferred to a fresh session. The branch stays open;
+`--smart-aggregators` ships opt-in default-off so no production
+scan gets the unvalidated behavior.
+
+What's working:
+
+- Days 1–4 modules + 66 unit tests, all green
+- Day 5 wiring into pipeline.run() with try/except guard
+- Library mode: stage skips entirely (validated on excalidraw
+  v8e — clean 7-feature output, main 484-file Excalidraw library
+  preserved)
+- Structural safeguards pinned in tests:
+  * `_MAX_FOLD_FILES = 50` — refuses fold on big features
+  * `_MAX_FOLD_COMMITS = 200` — refuses fold on active features
+  * Largest-feature lock when ≥30 files
+  * Caller-supplied `locked_features` frozenset
+- Test-infra always-folds rule pinned in prompt + 2 unit tests
+- `CostTracker.record` API correctly threaded
+
+What's NOT validated yet (Day 6 work):
+
+- App-repo aggregator redistribution. Day 5 v1 (with bug) silently
+  fell back to Tier-2; v2 (after API fix) over-folded due to
+  prompt sharpening; v3 (after structural safeguards) only
+  validated on excalidraw which is library mode. **No real
+  end-to-end test of `shared_participants` distribution on a
+  multi-domain DTO/contracts package.**
+- The CTO-readable rename pass (Stage 1.95) is not implemented —
+  the prompt-level `proposed_name` from the classifier is the only
+  rename signal today.
+
+Day 6 entry conditions:
+
+1. Run `--smart-aggregators` on dify (Contracts package) and ghost
+   (large monorepo) with full structural safeguards. Expect
+   `shared_participants > 0` on at least one feature.
+2. If redistribution does not fire, debug by reading the actual
+   classifier verdicts (currently logged at INFO level — may need
+   to bump to WARNING or capture explicitly to a file).
+3. Once redistribution validated, implement Stage 1.95 CTO-rename
+   pass and re-run.
+4. Update EVAL_REPORT.md and landing block with the new numbers.
+5. Promote `--smart-aggregators` to default-on.
+
+Approximate cost to reach Day 6 sign-off: $1–3 in Anthropic
+spend depending on how many app-repo iterations are needed.
+
+This session burn (Sprint 8): ~$6 across Days 1–5 + retries.
+~$5 of that was retries / debugging the API mismatch + over-fold
++ stale yaml. Day 6 should benefit from the lessons and finish
+in one round.
