@@ -88,6 +88,36 @@ class FlowParticipant(BaseModel):
     role: str | None = None  # optional human-readable role hint
 
 
+class SharedParticipant(BaseModel):
+    """A file a feature USES but does not own (Sprint 8 / 9).
+
+    When the aggregator classifier deletes a "shared-aggregator"
+    feature (a multi-domain DTOs package, a shared-UI primitives lib),
+    each of its files is redistributed as a ``SharedParticipant`` on
+    every product feature that imports it. The same file can appear
+    on N features — that's the point: a Button.tsx used by 10
+    features should show up on all 10.
+
+    Distinguished from ``Feature.paths`` (which stays 1:1 file→feature
+    for owned source code, used by blame / commit-attribution).
+
+    ``role``:
+        - ``consumer``: feature imports the file from elsewhere
+        - ``co-owner``: redistribution found multiple consumers and
+          the file is essential to several
+    ``line_weight`` (0.0–1.0) carries forward existing line-scoped
+    attribution. Defaults to 1.0 when fine-grained data isn't
+    available. ``origin_feature`` retains the deleted aggregator's
+    name so the dashboard can show provenance ("from: Shared API
+    Schemas") without losing it.
+    """
+
+    file_path: str
+    role: str = "consumer"  # "consumer" | "co-owner"
+    line_weight: float = 1.0
+    origin_feature: str | None = None
+
+
 class SymbolAttribution(BaseModel):
     file_path: str                          # the shared file
     symbols: list[str]                      # symbol names attributed to this feature
@@ -132,6 +162,12 @@ class Feature(BaseModel):
     # symbol-scoped health and coverage.
     participants: list["FlowParticipant"] = []
     symbol_health_score: float | None = None           # health score weighted by symbol line ranges
+    # Sprint 8/9: files this feature CONSUMES from a deleted aggregator
+    # (DTO packages, shared-UI primitives, schema crates). Same file
+    # can appear on multiple features. ``paths`` stays the 1:1
+    # owned-file list for blame / commit-attribution; this list is
+    # the additive N:M overlay.
+    shared_participants: list[SharedParticipant] = []
 
 
 class FeatureMap(BaseModel):

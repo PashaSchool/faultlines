@@ -130,6 +130,15 @@ class DeepScanResult:
     flow_participants: dict[str, dict[str, list[Any]]] = field(
         default_factory=dict,
     )
+    # Sprint 8/9: redistribution map populated by aggregator_apply
+    # when shared-aggregator features get redistributed as
+    # shared_participants on consumer features. Stored as ``Any``
+    # lists to avoid a circular import on faultline.models.types;
+    # the cli converts to SharedParticipant Pydantic objects at
+    # FeatureMap-build time.
+    shared_participants_map: dict[str, list[Any]] = field(
+        default_factory=dict,
+    )
 
     # ── dict read shims (legacy compat) ─────────────────────────────────
     def __getitem__(self, key: str) -> list[str]:

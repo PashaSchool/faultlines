@@ -184,6 +184,81 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+# ── Sprint 9 aggregator-specific tool schemas ──────────────────────────
+#
+# Kept separate from TOOL_SCHEMAS because they need _symbol_graph and
+# _scan_result injection at dispatch time and aren't useful to the
+# Sprint 1 per-package naming flow. The agentic classifier
+# (faultline.llm.aggregator_agent) merges these with TOOL_SCHEMAS
+# when building its message list.
+
+AGGREGATOR_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "name": "imports_of",
+        "description": (
+            "Return the files that the given file imports (outgoing "
+            "edges in the symbol graph). Use this to trace what a "
+            "file depends on. Empty result means a leaf file with no "
+            "tracked outgoing imports — usually a type-only or asset "
+            "file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to repo root.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "consumers_of",
+        "description": (
+            "Return the files that import FROM the given file "
+            "(incoming edges). This is the strongest signal for "
+            "shared-aggregator classification: a DTO file imported "
+            "by 12 distinct features tells you it's shared "
+            "infrastructure, not a feature on its own. Use this to "
+            "investigate ambiguous packages like 'contracts', "
+            "'shared-ui', 'types' before deciding."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to repo root.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "feature_summary",
+        "description": (
+            "Return a concise stats card for one feature in the "
+            "current scan: file count, flow count, description, "
+            "sample paths and flow names. Use this before "
+            "investigating a feature to decide whether it's worth "
+            "deeper exploration (large + active = product feature; "
+            "small + cold + generic name = likely dev-internal)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Feature name as it appears in the current scan.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+]
+
+
 # ── Path safety ────────────────────────────────────────────────────────
 
 

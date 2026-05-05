@@ -621,19 +621,33 @@ def _filter_workspace_sources(
 def _validate_source_coverage(
     source_files: list[str],
     features: dict[str, list[str]],
+    shared_participants_map: dict[str, list] | None = None,
 ) -> None:
     """Log a warning for any SOURCE file not attributed to any feature.
 
-    The legacy behaviour was a silent fold into ``shared-infra`` via the
-    ``_fold_stragglers_into_infra`` helper — that made quality regressions
-    invisible. Here we surface orphans as a log warning AND still
-    attribute them to ``shared-infra`` so downstream consumers don't
-    choke on missing files. The two goals are not in tension: the user
-    gets a working feature map AND we get a diagnostic signal.
+    A file is "covered" if it appears as an owned path in some feature
+    OR as a shared_participant of some feature (Sprint 8/9 redistribution).
+    Without honoring the side-channel, every redistributed file would
+    be flagged as orphan and silently re-folded into shared-infra,
+    undoing the work.
+
+    The legacy behaviour was a silent fold via ``_fold_stragglers_into_infra``
+    that made quality regressions invisible. Here we surface true orphans
+    as a log warning AND still attribute them to ``shared-infra`` so
+    downstream consumers don't choke.
     """
     attributed: set[str] = set()
     for paths in features.values():
         attributed.update(paths)
+    if shared_participants_map:
+        for participants in shared_participants_map.values():
+            for p in participants:
+                fp = (
+                    getattr(p, "file_path", None)
+                    or (p.get("file_path") if isinstance(p, dict) else None)
+                )
+                if fp:
+                    attributed.add(fp)
     orphans = sorted(set(source_files) - attributed)
     if not orphans:
         return
