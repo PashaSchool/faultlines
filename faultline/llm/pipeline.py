@@ -75,6 +75,7 @@ def run(
     critique: bool = False,
     trace_flows: bool = False,
     rename_generic: bool = False,  # Fix #4: REVERTED — Haiku too conservative
+    smart_aggregators: bool = False,  # Sprint 8: classify features into 4 buckets
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -427,6 +428,73 @@ def run(
             tracker=tracker,
             locked_names=locked,
         )
+
+    # Stage 1.97 (Sprint 8): Smart aggregator detection. One Sonnet
+    # call classifies every feature into product / shared-aggregator /
+    # developer-internal / tooling-infra. Aggregator features are
+    # deleted; their files redistribute as shared_participants on
+    # consuming product features (so a Button.tsx from shared-ui shows
+    # up on every feature that uses it). Developer-internal features
+    # rename to plain English (i18n → Translations) or fold into a
+    # 'developer-infrastructure' bucket. Tooling-infra folds to
+    # shared-infra. Runs AFTER trace_flows so flow re-attribution can
+    # vote on Sprint 7 callgraph participants. Off by default until
+    # Day 6 eval validates the lift.
+    if smart_aggregators:
+        try:
+            from faultline.llm.aggregator_detector import classify_features
+            from faultline.llm.aggregator_apply import apply_classifications
+            from faultline.analyzer.aggregator_consumers import find_consumers
+
+            classifications = classify_features(
+                result, api_key=api_key, model=model, tracker=tracker,
+            )
+
+            # Build per-aggregator consumer maps. Symbol graph is
+            # opportunistic — when --trace-flows wasn't used we don't
+            # have one cached, so consumer resolution falls back to
+            # filename heuristics inside find_consumers.
+            sym_graph = None
+            if repo_root is not None:
+                try:
+                    from faultline.analyzer.symbol_graph import build_symbol_graph
+                    sym_graph = build_symbol_graph(
+                        repo_root,
+                        list({p for paths in result.features.values() for p in paths}),
+                    )
+                except Exception as exc:  # noqa: BLE001 — opportunistic
+                    logger.warning(
+                        "smart_aggregators: symbol graph build failed (%s) — "
+                        "falling back to filename heuristic",
+                        exc,
+                    )
+
+            consumer_maps: dict[str, dict[str, list[str]]] = {}
+            for feat_name, verdict in classifications.items():
+                if verdict.classification != "shared-aggregator":
+                    continue
+                files = list(result.features.get(feat_name, []))
+                consumer_maps[feat_name] = find_consumers(
+                    files,
+                    aggregator_feature=feat_name,
+                    result=result,
+                    symbol_graph=sym_graph,
+                )
+
+            before = len(result.features)
+            result = apply_classifications(
+                result, classifications, consumer_maps,
+            )
+            after = len(result.features)
+            logger.info(
+                "smart_aggregators: %d → %d features after classification",
+                before, after,
+            )
+        except Exception as exc:  # noqa: BLE001 — opportunistic, never block
+            logger.warning(
+                "smart_aggregators: stage failed (%s) — keeping pre-Sprint-8 result",
+                exc,
+            )
 
     # Stage 2: Materialize synthetic features for non-source buckets.
     # deep_scan has its own internal docs partition as defensive fallback;

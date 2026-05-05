@@ -166,6 +166,21 @@ def analyze(
         ),
         is_flag=True,
     ),
+    smart_aggregators: bool = typer.Option(
+        False,
+        "--smart-aggregators",
+        help=(
+            "Sprint 8 (experimental): one Sonnet call classifies every "
+            "feature into product / shared-aggregator / developer-internal "
+            "/ tooling-infra. Shared-aggregators (DTO packages, shared-UI "
+            "primitives, schema crates) get DELETED — their files appear "
+            "as shared_participants on every consuming product feature "
+            "instead. Developer-internal areas rename to plain English "
+            "or fold into a 'developer-infrastructure' bucket. Adds "
+            "~$0.10–0.20 per scan. Off by default until eval validates."
+        ),
+        is_flag=True,
+    ),
     trace_flows: bool = typer.Option(
         False,
         "--trace-flows",
@@ -607,6 +622,7 @@ def analyze(
                         critique=critique,
                         trace_flows=trace_flows,
                         rename_generic=rename_generic,
+                        smart_aggregators=smart_aggregators,
                     )
                 except Exception as exc:  # pragma: no cover - surfacing guidance
                     console.print(
