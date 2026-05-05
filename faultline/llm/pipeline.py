@@ -481,9 +481,22 @@ def run(
                     symbol_graph=sym_graph,
                 )
 
+            # Build a commit-count proxy from the available signal.
+            # We don't have build_feature_map output here yet (that
+            # runs in cli.py post-pipeline), but classifier-stage
+            # safeguards only need a rough commit count to gate
+            # large-feature folds. Use the file count as the proxy
+            # ceiling — a feature with 200 files is large enough
+            # that we treat it as "not foldable" regardless of
+            # commit count. The real commit count check in
+            # _is_too_large_to_fold needs an actual map; fall back
+            # to None and rely on the file-count guard alone here.
+            commit_counts: dict[str, int] | None = None
+
             before = len(result.features)
             result = apply_classifications(
                 result, classifications, consumer_maps,
+                commit_counts=commit_counts,
             )
             after = len(result.features)
             logger.info(

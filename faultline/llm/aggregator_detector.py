@@ -117,41 +117,33 @@ product-feature
   "Workflow Editor", "Invoice Generation".
 
 shared-aggregator
-  Files are CONSUMED by multiple product features through imports
-  or other dependency edges, and the files have no standalone
-  user-facing purpose of their own.
-
-  KEY DECISION TEST: would deleting this feature and listing each
-  of its files as a *participant* of every feature that imports it
-  produce a more useful dashboard than keeping it as a feature on
-  its own? If YES → shared-aggregator. If the files are a
-  self-contained dev area that nobody really imports, → it's
-  developer-internal instead.
+  A SMALL-TO-MEDIUM (typically <50 files) cross-cutting helper or
+  type package that EVERY OTHER feature imports. Files have no
+  standalone user-facing purpose; they exist to be consumed.
 
   Common patterns:
     - DTO / schema / contracts packages with sub-folders for auth,
-      workflows, billing, etc. — every controller, service, and
-      view imports these types.
-    - Shared UI primitive libraries (Button, Modal, Dropdown, Card)
-      imported by every product page.
-    - Shared validation, parsing, formatting helpers used across
-      auth + billing + checkout + reports.
-    - Service-shared utilities like ``http-client``,
-      ``rate-limiter``, ``logger`` that EVERY service imports.
+      workflows, billing, etc.
+    - Shared UI primitive libraries (Button, Modal, Dropdown).
+    - Shared validation, parsing, formatting helpers.
+    - Cross-service utilities (``http-client``, ``logger``).
 
-  When you classify a feature here, list ``consumer_features`` as
-  the product features you expect to import the aggregator's files.
-  The pipeline cross-checks against the actual import graph and
-  redistributes accordingly — your hint helps fallback resolution
-  when imports are dynamic or untyped.
+  Only use this bucket when ALL three are true:
+    1. The feature is small relative to the rest of the scan
+       (NOT the largest feature, NOT >100 files in a small repo).
+    2. Files are clearly imported by multiple OTHER product
+       features — visible in path structure (sub-folders match
+       other feature names) or naming.
+    3. The feature has no user-facing surface of its own (no UI
+       routes, no API endpoints, no business logic — just types
+       or primitives).
 
-  This bucket EXISTS specifically to make a Button.tsx that's used
-  in 10 product features show up on all 10. If you classify it as
-  developer-internal instead, the file disappears into a single
-  dev-infrastructure drawer and the consuming features lose the
-  surface. Choose this bucket whenever the import-consumption
-  pattern is real, even if the package name (``contracts``, ``ui``,
-  ``shared``) sounds developer-y.
+  When in doubt, prefer ``product-feature``. False positives here
+  delete a real feature; false negatives just leave a clutter
+  feature that the user can rename later.
+
+  When you DO classify a feature here, list ``consumer_features``
+  as the product features you expect to import its files.
 
 developer-internal
   Real maintenance area but not a product feature. Devs work on

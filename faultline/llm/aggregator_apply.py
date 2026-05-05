@@ -61,6 +61,21 @@ _AGGREGATOR_CONFIDENCE_FLOOR = 4
 # its participants are scattered).
 _FLOW_REATTRIBUTION_THRESHOLD = 0.6
 
+# Structural safeguards. Day 5 produced a regression where the
+# excalidraw library's main package (484 files, 296 commits, 178
+# bug fixes) was classified as developer-internal and folded into a
+# Developer Infrastructure bucket. The model genuinely thought the
+# main codebase was infrastructure. Prompts can soften this but
+# can't guarantee it; the only reliable defense is structural.
+#
+# These caps refuse to fold or shared-aggregator-redistribute a
+# feature that exceeds them, regardless of LLM verdict. Real
+# developer-internal areas (locales, fixtures, e2e setup) are small
+# and quiet. A 100-file 200-commit "developer-internal" call is
+# almost certainly the main product code being misread.
+_MAX_FOLD_FILES = 50          # >50 files refuses fold/aggregator
+_MAX_FOLD_COMMITS = 200       # >200 commits refuses fold/aggregator
+
 
 def _file_to_feature_index(
     features: dict[str, list[str]],
@@ -279,12 +294,48 @@ def _fold_to_bucket(
     result.flow_participants.pop(feature_name, None)
 
 
+def _is_too_large_to_fold(
+    feature_name: str,
+    files: list[str],
+    commit_counts: dict[str, int] | None,
+) -> bool:
+    """Structural guard: refuse to fold a feature that's too large or
+    too active to plausibly be developer-internal. The model can be
+    wrong; this gate keeps the dashboard from losing a real product
+    feature on one bad call."""
+    if len(files) > _MAX_FOLD_FILES:
+        return True
+    if commit_counts and commit_counts.get(feature_name, 0) > _MAX_FOLD_COMMITS:
+        return True
+    return False
+
+
+def _largest_feature_name(features: dict[str, list[str]]) -> str | None:
+    """The biggest feature by file count — a strong heuristic for the
+    main product/library package. Day 5 found the model would fold
+    even this one when prompted aggressively.
+
+    Only kicks in when the largest feature is substantial (>= 30
+    files). On small repos / synthetic fixtures where the largest
+    feature is itself small, no lock — every feature is fair game
+    for the classifier.
+    """
+    if not features:
+        return None
+    largest = max(features, key=lambda n: len(features[n]))
+    if len(features[largest]) < 30:
+        return None
+    return largest
+
+
 def apply_classifications(
     result: "DeepScanResult",
     classifications: dict[str, "FeatureClassification"],
     consumer_maps: dict[str, dict[str, list[str]]],
     *,
     confidence_floor: int = _AGGREGATOR_CONFIDENCE_FLOOR,
+    commit_counts: dict[str, int] | None = None,
+    locked_features: frozenset[str] = frozenset(),
 ) -> "DeepScanResult":
     """Mutate ``result`` in place per the classifier verdicts.
 
@@ -312,13 +363,44 @@ def apply_classifications(
     Returns:
         the mutated ``result`` (same object) for chaining.
     """
+    # Always lock the largest feature — that's almost certainly the
+    # main product/library code. Day 5 regression: excalidraw's main
+    # 484-file library package was classified as developer-internal
+    # and folded. The largest-feature lock prevents that even when
+    # both the prompt and confidence pass.
+    largest = _largest_feature_name(result.features)
+    locks: set[str] = set(locked_features)
+    if largest:
+        locks.add(largest)
+
     # Phase 1+2: handle aggregators
     aggregator_names = [
         name for name, v in classifications.items()
         if v.classification == "shared-aggregator"
         and v.confidence >= confidence_floor
         and name in result.features
+        and name not in locks
+        and not _is_too_large_to_fold(
+            name, result.features[name], commit_counts,
+        )
     ]
+    skipped_aggregators = [
+        name for name, v in classifications.items()
+        if v.classification == "shared-aggregator"
+        and v.confidence >= confidence_floor
+        and name in result.features
+        and (
+            name in locks
+            or _is_too_large_to_fold(
+                name, result.features[name], commit_counts,
+            )
+        )
+    ]
+    for skipped in skipped_aggregators:
+        logger.info(
+            "aggregator_apply: refused to fold %s (size/commit/lock guard)",
+            skipped,
+        )
     for aggregator_name in aggregator_names:
         consumer_map = consumer_maps.get(aggregator_name, {})
         flows_moved, flows_dropped = _reattribute_flows(
@@ -340,6 +422,16 @@ def apply_classifications(
         if v.classification != "developer-internal":
             continue
         if name not in result.features:
+            continue
+        # Structural guards: no folding the main product code
+        if name in locks or _is_too_large_to_fold(
+            name, result.features[name], commit_counts,
+        ):
+            logger.info(
+                "aggregator_apply: refused to fold %s into dev-infra "
+                "(size/commit/lock guard)",
+                name,
+            )
             continue
         if (
             v.proposed_name
@@ -368,6 +460,17 @@ def apply_classifications(
         if name not in result.features:
             continue
         if v.confidence < confidence_floor:
+            continue
+        # Same structural guard — a 200-file feature is not a
+        # tooling config no matter what the model says.
+        if name in locks or _is_too_large_to_fold(
+            name, result.features[name], commit_counts,
+        ):
+            logger.info(
+                "aggregator_apply: refused to fold %s into shared-infra "
+                "(size/commit/lock guard)",
+                name,
+            )
             continue
         _fold_to_bucket(result, name, "shared-infra")
         logger.info(
