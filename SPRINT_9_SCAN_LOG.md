@@ -28,7 +28,7 @@ keeps growing across sessions.
 | **ollama** | ⬜ | — | — | library |
 | **strapi** | ⬜ | — | — | Tier-2 result; would benefit from Sprint 9 rename pass |
 | **supabase** | ⬜ | — | — | Tier-2 result, manual judgment 76%/92% |
-| **calcom** | ⬜ | — | — | excluded from landing aggregate (old scan, 198 features) |
+| **calcom** | ❌ excluded | — | — | dropped from scan list — too expensive (10k+ files, ~$8-10/scan) and excluded from landing aggregate anyway |
 
 ## Cost burned on Sprint 9 scans so far
 
