@@ -179,3 +179,78 @@ What changes is only the classifier itself — single-shot → agentic.
 - Cost guardrail: never run a paid scan in CI; manual scans only with explicit budget
 - Tool-call hard caps in code, not just prompt instruction
 - Day 3 checkpoint: smoke test on dify before scaling to multi-repo round
+
+## Status (pause point — May 5 2026)
+
+Days 1–3 done; Days 4–6 deferred. Sprint 9 ships as **opt-in
+default-off** — `--smart-aggregators` stays a power-user flag, no
+production scan touches it. The branch (`feat/sprint9-agentic-aggregators`)
+has all the work; promote to default-on only after a future
+session validates redistribution actually fires on real cases.
+
+What's working:
+
+- Days 1–2 modules + 102 unit tests, all green
+- Day 3 wiring into pipeline.run() + library-mode skip
+- Smoke-tested on dify: agent fires, makes ~70 tool round-trips,
+  produces 20 specific business-named features (Workflow Editor,
+  Datasets, Plugin Detail & Configuration, Plugin Installation,
+  Plugin Management Page, Marketplace Browsing — all way more
+  CTO-readable than baseline)
+- Library mode (excalidraw equivalent) properly skips the stage
+
+What's NOT validated:
+
+- **Aggregator redistribution still doesn't fire.** The agent
+  investigated dify's `Contracts` (142 cross-domain TS files)
+  using tools — read sample files, walked the import graph —
+  and independently classified it as `product-feature`, NOT
+  `shared-aggregator`. So `shared_participants` stayed 0 across
+  every feature. Either:
+    (a) The agent's call is correct: Contracts has substantive
+        content and is best treated as a real product surface,
+        not an infrastructure aggregator. The dashboard shows
+        it as one feature instead of scattering type files
+        across 12 consumers.
+    (b) The prompt still under-pushes redistribution. A "if a
+        file is imported by ≥3 distinct features, MUST redistribute"
+        hard rule could change the verdict.
+
+  We don't know which is true without more iteration. Cost so far
+  ~$11 across Sprint 8 + Sprint 9. Pausing here.
+
+What still works as Sprint 9 contribution:
+
+- Significantly better feature names via the agent's
+  proposed_name renames (Workflow Editor, Plugin Detail &
+  Configuration, Marketplace Browsing — all gained from agent
+  investigation, not single-shot guess)
+- Library mode skip (no main-product-folding regressions)
+- Structural safeguards (largest-feature lock, file/commit caps
+  on fold paths only)
+- Opt-in flag means production users untouched
+
+Day 4–6 entry conditions for resuming in a fresh session:
+
+1. Decide on the redistribution philosophy: is shared-aggregator
+   a categorical bucket (DTOs always redistribute) or a contextual
+   one (only redistribute when consumers clearly outweigh the
+   feature's own content)? Today the agent picks (b); the user
+   wanted (a). Resolve before running paid scans.
+
+2. If (a): strengthen prompt with a HARD rule — "if 3+ distinct
+   features import any file in this feature, classify as
+   shared-aggregator regardless of file content." Re-run on dify
+   to validate. Then immich + ghost.
+
+3. If (b): accept current behavior, document it on the landing,
+   ship as-is.
+
+4. Day 5 (CTO-readable rename pass) — partly done already via the
+   agent's proposed_name. Day 6 final eval + landing update happens
+   only if redistribution validates in Day 4.
+
+Approximate remaining cost: $2–5 depending on iteration count.
+
+This session burn (Sprint 9): ~$3.50. Total Sprint 8 + Sprint 9
+burn ≈ $11. The branch stays open for future revisit.
