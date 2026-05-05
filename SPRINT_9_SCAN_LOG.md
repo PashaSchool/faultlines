@@ -17,30 +17,52 @@ keeps growing across sessions.
 | Repo | Sprint 9 status | Strict | Fixable | Notes |
 |------|-----------------|-------:|--------:|-------|
 | **dify** | 🟡 sprint9b (no Stage 2.5) | 75% | 90% | clean baseline scan, no duplicates so Stage 2.5 wouldn't change result |
-| **plane** | 🟡 sprint9 → re-scanning now | ~65% | ~70% | Issues × 2, Workspace × 2 dup bug — re-scan in flight |
+| **plane** | ✅ sprint9b (Stage 2.5) | **77%** | **81%** | re-scan fixed Issues × 2 / Workspace × 2; new specifics: Issue Management, Public Issue Board API |
 | **n8n** | 🟡 sprint9 (no Stage 2.5) | ~57% | ~67% | Credentials × 2 dup, Editor 7504f mega-bucket. Re-scan deferred — biggest ($8) |
-| **immich** | ⬜ → scanning now | — | — | first Sprint 9 run in flight |
-| **ghost** | ⬜ → scanning now | — | — | first Sprint 9 run in flight |
+| **immich** | ✅ sprint9 (Stage 2.5) | **85%** | **95%** | best result yet — many specifics, no dupes |
+| **ghost** | ✅ sprint9 (Stage 2.5) | **85%** | **97%** | clean win — Members, Translations, Admin X Settings, Theme Engine, Sodo Search, Custom Redirects |
 | **excalidraw** | 🔒 library mode | n/a | n/a | Sprint 9 skips libraries by design |
-| **saleor** | ⬜ | — | — | Sprint 8/Tier-2 era; clean baseline 92%/92% |
-| **meilisearch** | ⬜ | — | — | library; mostly skip |
-| **gitea** | ⬜ | — | — | already strong baseline 75%/94% |
-| **ollama** | ⬜ | — | — | library |
-| **strapi** | ⬜ | — | — | Tier-2 result; would benefit from Sprint 9 rename pass |
-| **supabase** | ⬜ | — | — | Tier-2 result, manual judgment 76%/92% |
+| **saleor** | ✅ sprint9 | **~95%** | **95%** | already strong, Sprint 9 confirmed clean: Product, Order Management, Checkout, App Integrations |
+| **meilisearch** | ✅ sprint9 | **~95%** | **100%** | clean Rust crates: Index Scheduler, Update, Search, Dump, Federated Network |
+| **gitea** | ✅ sprint9 | **~95%** | **100%** | biggest improvement (+20pp): Repository, Auth, Repo Issue, Notifications & Email, Repository Import & Migration |
+| **ollama** | ✅ sprint9 | **~85%** | **93%** | Model Inference, MLX Inference Runner, CLI & Desktop Launcher, Desktop Application Shell |
+| **strapi** | ⚠ sprint9 (false library skip) | ~62% | ~85% | repo_classifier.detect_library mis-flagged on examples/docs/www; agent skipped → Tier-2 result |
+| **supabase** | ✅ sprint9 | **~77%** | **~85%** | 25 → 13 features; Studio, UI Block Library, Vue Blocks, Design System Documentation |
 | **calcom** | ❌ excluded | — | — | dropped from scan list — too expensive (10k+ files, ~$8-10/scan) and excluded from landing aggregate anyway |
 
-## Cost burned on Sprint 9 scans so far
+## Cost burned on Sprint 9 scans
 
   dify       $2.47
   plane v1   $3.76
   n8n v1     $7.97
-  ───────────────
-  total     ~$14.20
+  ───────── (round 1 = $14.20)
+  plane v2   $3.59  ← Stage 2.5 fix
+  immich     $1.53
+  ghost      $2.59
+  ───────── (round 2 = $7.71, under $10 budget)
+  ─────────────────
+  TOTAL    ~$21.91 across all Sprint 9 attempts
 
-  This round (in-flight): plane re-scan + immich + ghost
-  Estimated: $3.76 + $1.16 + $1.89 ≈ $6.80
-  Budget: $10. Remaining headroom: ~$3.20.
+  Round 2 highlights: 3 clean scans, 0 duplicates anywhere,
+  immich + ghost both 85%/95%+ — the agent shines on
+  product-driven monorepos.
+
+  ─── Round 3 (May 5 evening) ──────
+  saleor       $0.79
+  gitea        $0.77
+  strapi       $0.30  (false library skip)
+  supabase     $2.09
+  ollama       $0.46
+  meilisearch  $1.51
+  ──────── ($5.92, well under \$10 budget)
+  ─────────────────
+  GRAND TOTAL  ≈ \$27.83 across all Sprint 9 attempts
+
+  Round 3 highlights:
+  • gitea +20pp strict over baseline (biggest single-repo lift)
+  • saleor, meilisearch confirmed clean on already-strong baselines
+  • supabase compressed 25 → 13 features
+  • strapi blocked by false library detection — separate bug
 
 ## What changed in the pipeline since the early Sprint 9 runs
 
