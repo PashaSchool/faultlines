@@ -468,10 +468,12 @@ def run(
                         exc,
                     )
 
+            import os
             import anthropic
-            client = anthropic.Anthropic(api_key=api_key) if api_key else None
-            if client is None:
+            resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+            if not resolved_key:
                 raise RuntimeError("no API key for agentic classifier")
+            client = anthropic.Anthropic(api_key=resolved_key)
 
             classifications = agentic_classify_features(
                 result,
