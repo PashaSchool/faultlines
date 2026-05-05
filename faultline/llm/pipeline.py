@@ -440,7 +440,21 @@ def run(
     # shared-infra. Runs AFTER trace_flows so flow re-attribution can
     # vote on Sprint 7 callgraph participants. Off by default until
     # Day 6 eval validates the lift.
-    if smart_aggregators:
+    if smart_aggregators and is_library:
+        # Smart aggregator detection is NOT for library repos. In a
+        # library, every workspace package is a library MODULE — part
+        # of the product surface, not aggregator infrastructure. The
+        # excalidraw v8c run on May 5 illustrated the failure: the
+        # classifier folded Math (19f), Common (24f), Utils (11f),
+        # Renderer (16f) as developer-internal because they're small
+        # by app-repo standards. They are not — they're the library.
+        # Skip the stage in library mode to avoid demolishing the
+        # public API surface of the library.
+        logger.info(
+            "smart_aggregators: skipped — library mode active. Each "
+            "workspace package is a library module, not infrastructure."
+        )
+    elif smart_aggregators:
         try:
             from faultline.llm.aggregator_detector import classify_features
             from faultline.llm.aggregator_apply import apply_classifications
