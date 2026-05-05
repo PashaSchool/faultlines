@@ -75,6 +75,7 @@ def run(
     critique: bool = False,
     trace_flows: bool = False,
     rename_generic: bool = False,  # Fix #4: REVERTED — Haiku too conservative
+    smart_aggregators: bool = False,  # Sprint 9: agentic 4-bucket classifier
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -428,6 +429,86 @@ def run(
             locked_names=locked,
         )
 
+    # Stage 1.97 (Sprint 9): Agentic aggregator classifier. The LLM
+    # gets read-only tools (read_file_head, list_directory,
+    # consumers_of, feature_summary, ...) and investigates each
+    # suspicious feature before classifying it into product /
+    # shared-aggregator / developer-internal / tooling-infra.
+    # Replaces Sprint 8's single-shot classifier (which never picked
+    # shared-aggregator on canonical cases like dify Contracts —
+    # the model couldn't see who imported what).
+    #
+    # Library mode SKIPS this stage entirely: every workspace package
+    # in a library is a public API module, not infrastructure (Day 5
+    # of Sprint 8 lesson).
+    if smart_aggregators and is_library:
+        logger.info(
+            "smart_aggregators: skipped — library mode active. Each "
+            "workspace package is a library module, not infrastructure."
+        )
+    elif smart_aggregators:
+        try:
+            from faultline.llm.aggregator_agent import agentic_classify_features
+            from faultline.llm.aggregator_apply import apply_classifications
+            from faultline.analyzer.aggregator_consumers import find_consumers
+
+            # Build SymbolGraph for consumer resolution and tool access.
+            sym_graph = None
+            if repo_root is not None:
+                try:
+                    from faultline.analyzer.symbol_graph import build_symbol_graph
+                    sym_graph = build_symbol_graph(
+                        repo_root,
+                        list({p for paths in result.features.values() for p in paths}),
+                    )
+                except Exception as exc:  # noqa: BLE001 — opportunistic
+                    logger.warning(
+                        "smart_aggregators: symbol graph build failed (%s) — "
+                        "agent will fall back to filename heuristics",
+                        exc,
+                    )
+
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key) if api_key else None
+            if client is None:
+                raise RuntimeError("no API key for agentic classifier")
+
+            classifications = agentic_classify_features(
+                result,
+                repo_root=repo_root,
+                symbol_graph=sym_graph,
+                client=client,
+                model=model or "claude-sonnet-4-6",
+                tracker=tracker,
+            )
+
+            consumer_maps: dict[str, dict[str, list[str]]] = {}
+            for feat_name, verdict in classifications.items():
+                if verdict.classification != "shared-aggregator":
+                    continue
+                files = list(result.features.get(feat_name, []))
+                consumer_maps[feat_name] = find_consumers(
+                    files,
+                    aggregator_feature=feat_name,
+                    result=result,
+                    symbol_graph=sym_graph,
+                )
+
+            before = len(result.features)
+            result = apply_classifications(
+                result, classifications, consumer_maps,
+            )
+            after = len(result.features)
+            logger.info(
+                "smart_aggregators: %d → %d features after agentic classification",
+                before, after,
+            )
+        except Exception as exc:  # noqa: BLE001 — opportunistic, never block
+            logger.warning(
+                "smart_aggregators: stage failed (%s) — keeping pre-Sprint-9 result",
+                exc,
+            )
+
     # Stage 2: Materialize synthetic features for non-source buckets.
     # deep_scan has its own internal docs partition as defensive fallback;
     # by pre-filtering here we make the bucketizer the single source of
@@ -458,7 +539,11 @@ def run(
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
     # silent fallback into shared-infra.
-    _validate_source_coverage(source_files, result.features)
+    _validate_source_coverage(
+        source_files,
+        result.features,
+        shared_participants_map=getattr(result, "shared_participants_map", None),
+    )
 
     # Stage 4 (Improvement #4): Auto-save discovered canonical names
     # back to ``.faultline.yaml`` so subsequent runs lock them

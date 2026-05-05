@@ -166,6 +166,23 @@ def analyze(
         ),
         is_flag=True,
     ),
+    smart_aggregators: bool = typer.Option(
+        False,
+        "--smart-aggregators",
+        help=(
+            "Sprint 9 (experimental): agentic LLM classifier with read-"
+            "only tools (read_file_head, consumers_of, feature_summary, "
+            "...). Investigates suspicious features by reading sample "
+            "files and checking who imports whom, then classifies into "
+            "product / shared-aggregator / developer-internal / "
+            "tooling-infra. Shared-aggregators (DTO packages, shared-UI "
+            "primitives) get DELETED — their files appear as "
+            "shared_participants on every consuming product feature. "
+            "Library repos skip the stage entirely (every workspace "
+            "package is a public API module). Adds ~$0.50–$2 per scan."
+        ),
+        is_flag=True,
+    ),
     trace_flows: bool = typer.Option(
         False,
         "--trace-flows",
@@ -606,6 +623,7 @@ def analyze(
                         tool_flows=tool_flows,
                         critique=critique,
                         trace_flows=trace_flows,
+                        smart_aggregators=smart_aggregators,
                         rename_generic=rename_generic,
                     )
                 except Exception as exc:  # pragma: no cover - surfacing guidance
