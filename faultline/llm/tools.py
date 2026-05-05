@@ -568,4 +568,117 @@ def dispatch_tool(
     if name == "find_event_handlers":
         return find_event_handlers(repo_root, tool_input.get("path_glob", ""))
 
+    # Sprint 9: import-graph tools for agentic aggregator detection.
+    # The agent uses these to investigate which OTHER files / features
+    # consume a given file before deciding if it's shared infrastructure.
+    if name == "imports_of":
+        path = tool_input.get("path", "")
+        graph = tool_input.get("_symbol_graph")  # injected by caller
+        return imports_of(graph, path)
+
+    if name == "consumers_of":
+        path = tool_input.get("path", "")
+        graph = tool_input.get("_symbol_graph")  # injected by caller
+        return consumers_of(graph, path)
+
+    if name == "feature_summary":
+        feature_name = tool_input.get("name", "")
+        result = tool_input.get("_scan_result")  # injected by caller
+        return feature_summary(result, feature_name)
+
     return f"ERROR: unknown tool: {name}"
+
+
+# ── Sprint 9 import-graph tools ────────────────────────────────────────
+
+
+def imports_of(symbol_graph: Any, path: str) -> str:
+    """Return files that ``path`` imports (forward edges from Sprint 7
+    SymbolGraph).
+
+    Output is line-per-edge: ``<target_file>``. Empty result is a
+    real signal — the file imports nothing tracked, so it's likely
+    a leaf (type definition, constant, raw asset).
+    """
+    if symbol_graph is None:
+        return "ERROR: symbol graph not available; pipeline did not build one"
+    if not path:
+        return "ERROR: path is required"
+    try:
+        edges = symbol_graph.imports_from(path)
+    except (AttributeError, KeyError):
+        return f"ERROR: file not in symbol graph: {path}"
+    if not edges:
+        return f"(no outgoing imports from {path} — leaf file)"
+    out = [f"Imports from {path} ({len(edges)} edges):"]
+    seen = set()
+    for edge in edges:
+        target = getattr(edge, "target_file", None)
+        if target and target not in seen:
+            seen.add(target)
+            out.append(f"  → {target}")
+    return "\n".join(out)
+
+
+def consumers_of(symbol_graph: Any, path: str) -> str:
+    """Return files that import FROM ``path`` (reverse edges).
+
+    This is the strongest signal for aggregator classification:
+    a DTO file imported by 12 different features' code is exactly
+    what we want to redistribute.
+    """
+    if symbol_graph is None:
+        return "ERROR: symbol graph not available; pipeline did not build one"
+    if not path:
+        return "ERROR: path is required"
+    try:
+        edges = symbol_graph.callers_of(path)
+    except (AttributeError, KeyError):
+        return f"ERROR: file not in symbol graph: {path}"
+    if not edges:
+        return f"(no consumers of {path} — file is unused or only consumed by untracked code)"
+    out = [f"Consumers of {path} ({len(edges)} edges):"]
+    seen = set()
+    for edge in edges:
+        importer = getattr(edge, "target_file", None)
+        if importer and importer not in seen:
+            seen.add(importer)
+            out.append(f"  ← {importer}")
+    return "\n".join(out)
+
+
+def feature_summary(scan_result: Any, name: str) -> str:
+    """Return a concise summary of one feature in the in-flight scan.
+
+    The agent uses this to decide whether a feature is large/active
+    (likely product) vs small/cold (likely dev-internal) before
+    investigating with the file-level tools.
+    """
+    if scan_result is None:
+        return "ERROR: scan result not available"
+    if not name:
+        return "ERROR: name is required"
+    paths = scan_result.features.get(name)
+    if paths is None:
+        return f"ERROR: no feature named {name}"
+    flows = scan_result.flows.get(name, []) if hasattr(scan_result, "flows") else []
+    desc = (
+        scan_result.descriptions.get(name, "")
+        if hasattr(scan_result, "descriptions") else ""
+    )
+    out = [
+        f"Feature: {name}",
+        f"  Files: {len(paths)}",
+        f"  Flows: {len(flows)}",
+    ]
+    if desc:
+        out.append(f"  Description: {desc[:120]}")
+    if paths:
+        out.append("  Sample paths (first 8):")
+        for p in paths[:8]:
+            out.append(f"    {p}")
+    if flows:
+        out.append("  Flow names (first 8):")
+        for f in flows[:8]:
+            out.append(f"    {f}")
+    return "\n".join(out)
