@@ -492,6 +492,136 @@ class TestJudgeFlowAttributionLoop:
         assert len(client.messages.calls) == 2
 
 
+class TestCacheLayer:
+    """Day 3 — verdict cache. Re-scans skip Haiku for unchanged flows."""
+
+    def _scripted_judge(self, flow: str, frm: str, to: str) -> _FakeResponse:
+        text = (
+            '{"verdicts":[{'
+            f'"flow":"{flow}","from":"{frm}",'
+            f'"decision":"move","to":"{to}","confidence":5'
+            "}]}"
+        )
+        return _FakeResponse(content=[_FakeBlock(text=text)])
+
+    def test_writes_cache_on_first_run(self, tmp_path):
+        result = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            descriptions={"Auth": "Login.", "Vue Blocks": ""},
+            flows={"Vue Blocks": ["log-in"]},
+            repo_path="/repos/myapp",
+        )
+        client = _FakeAnthropic([
+            self._scripted_judge("log-in", "Vue Blocks", "Auth"),
+        ])
+        moves = judge_flow_attribution(
+            result, client=client, cache_dir=tmp_path, repo_slug="myapp",
+        )
+        assert moves == 1
+        # Cache file written
+        cache_file = tmp_path / "flow-verdicts-myapp.json"
+        assert cache_file.exists()
+        import json
+        data = json.loads(cache_file.read_text())
+        assert data["version"] == 1
+        assert "feature_set_hash" in data
+        # Cached verdict keyed by current_owner::flow_name
+        assert "Vue Blocks::log-in" in data["verdicts"]
+
+    def test_replay_cache_skips_api_call(self, tmp_path):
+        # First run writes cache
+        result1 = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            descriptions={"Auth": "Login.", "Vue Blocks": ""},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        client1 = _FakeAnthropic([
+            self._scripted_judge("log-in", "Vue Blocks", "Auth"),
+        ])
+        moves1 = judge_flow_attribution(
+            result1, client=client1, cache_dir=tmp_path, repo_slug="myapp",
+        )
+        assert moves1 == 1
+        assert len(client1.messages.calls) == 1
+
+        # Second run with SAME flow + features → cache hit, no API call
+        result2 = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            descriptions={"Auth": "Login.", "Vue Blocks": ""},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        client2 = _FakeAnthropic([])  # would crash if any API call attempted
+        moves2 = judge_flow_attribution(
+            result2, client=client2, cache_dir=tmp_path, repo_slug="myapp",
+        )
+        assert moves2 == 1
+        assert len(client2.messages.calls) == 0  # Pure cache replay
+        # And the move actually applied on result2
+        assert "log-in" in result2.flows["Auth"]
+
+    def test_invalidates_cache_when_features_change(self, tmp_path):
+        # First run: write cache for {Auth, Vue Blocks}
+        result1 = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            descriptions={"Auth": "", "Vue Blocks": ""},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        client1 = _FakeAnthropic([
+            self._scripted_judge("log-in", "Vue Blocks", "Auth"),
+        ])
+        judge_flow_attribution(
+            result1, client=client1, cache_dir=tmp_path, repo_slug="myapp",
+        )
+
+        # Second run with DIFFERENT feature set → cache invalidates,
+        # judge re-runs against fresh menu
+        result2 = _ds(
+            features={"Auth": ["a.ts"], "Studio": ["s.ts"]},  # Vue Blocks gone, Studio appeared
+            descriptions={"Auth": "", "Studio": ""},
+            flows={"Studio": ["log-in"]},  # owner is now Studio
+        )
+        client2 = _FakeAnthropic([
+            self._scripted_judge("log-in", "Studio", "Auth"),
+        ])
+        moves2 = judge_flow_attribution(
+            result2, client=client2, cache_dir=tmp_path, repo_slug="myapp",
+        )
+        assert moves2 == 1
+        assert len(client2.messages.calls) == 1  # API was called — cache invalidated
+
+    def test_cache_disabled_with_none(self, tmp_path):
+        result = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        client = _FakeAnthropic([
+            self._scripted_judge("log-in", "Vue Blocks", "Auth"),
+        ])
+        judge_flow_attribution(
+            result, client=client, cache_dir=None, repo_slug="myapp",
+        )
+        # No file in tmp_path because caching disabled
+        cache_file = tmp_path / "flow-verdicts-myapp.json"
+        assert not cache_file.exists()
+
+    def test_corrupt_cache_falls_back_to_full_judge(self, tmp_path):
+        # Plant a corrupt cache file
+        (tmp_path / "flow-verdicts-myapp.json").write_text("not valid json {{{")
+        result = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        client = _FakeAnthropic([
+            self._scripted_judge("log-in", "Vue Blocks", "Auth"),
+        ])
+        moves = judge_flow_attribution(
+            result, client=client, cache_dir=tmp_path, repo_slug="myapp",
+        )
+        # Corrupt cache treated as empty → judge ran fresh
+        assert moves == 1
+        assert len(client.messages.calls) == 1
+
+
 class TestFallbackChain:
     """Day 2 — pipeline-level wiring: judge first, heuristic fallback."""
 
