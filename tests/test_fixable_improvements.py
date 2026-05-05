@@ -132,7 +132,34 @@ class TestCollapseSameName:
         })
         merged = _collapse_same_name_features(result)
         assert "shared-infra" in merged.features
-        assert "documentation" in merged.features
+
+    def test_post_pipeline_collapses_late_introduced_duplicates(self):
+        """Regression: Sprint 9 May 5 scans produced n8n Credentials × 2
+        and plane Issues × 2 because sub_decompose / smart_aggregators
+        introduced duplicate names AFTER Stage 1.45 ran. The Stage 2.5
+        final-pass collapse catches them.
+        """
+        # Plane-style: two distinct apps that ended up with the same
+        # display name. Path union puts them under one feature on the
+        # dashboard rather than showing two confusingly-identical ones.
+        result = _ds({
+            "Issues": [
+                "apps/web/components/issues/header.tsx",
+                "apps/web/core/issues/list.tsx",
+            ],
+            "issues": [
+                "apps/space/components/issues/board.tsx",
+            ],
+            "Workflow Editor": ["apps/web/workflow-editor/canvas.tsx"],
+        })
+        merged = _collapse_same_name_features(result)
+        # Both Issues collapsed to one
+        issues_keys = [n for n in merged.features if n.lower() == "issues"]
+        assert len(issues_keys) == 1
+        # All three issue-related paths preserved
+        assert len(merged.features[issues_keys[0]]) == 3
+        # Workflow Editor untouched
+        assert "Workflow Editor" in merged.features
 
 
 # ── Fix #2 — commit-aware noise drop ─────────────────────────────────

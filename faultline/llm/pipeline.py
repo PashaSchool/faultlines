@@ -538,6 +538,23 @@ def run(
             len(infra_files),
         )
 
+    # Stage 2.5: Final same-name collapse. Stage 1.45 already ran an
+    # exact-name dedup early in the pipeline, but later stages
+    # (sub_decompose, smart_aggregators, repo_config aliasing) can
+    # re-introduce duplicate display names. Sub_decompose splitting
+    # two distinct parents into similarly-named children is the
+    # common offender — n8n's Credentials × 2 (backend defs +
+    # frontend api) and plane's Issues × 2 (workspace + public
+    # space) showed up in the Sprint 9 May 5 scans.
+    #
+    # Path union is the right call when both share a coherent
+    # business domain. When they don't (plane's two Issues live in
+    # different deployable apps), the merge does scatter — that's
+    # the known trade-off documented in the bug investigation.
+    # Smart detection (path-disjoint → rename instead of merge) is
+    # tracked as a future follow-up.
+    result = _collapse_same_name_features(result)
+
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
     # silent fallback into shared-infra.
