@@ -492,6 +492,39 @@ class TestJudgeFlowAttributionLoop:
         assert len(client.messages.calls) == 2
 
 
+class TestFallbackChain:
+    """Day 2 — pipeline-level wiring: judge first, heuristic fallback."""
+
+    def test_no_api_key_returns_zero_no_crash(self, monkeypatch):
+        # No client, no env key → graceful no-op (caller falls back)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        result = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        moves = judge_flow_attribution(result, client=None, api_key=None)
+        assert moves == 0
+        # Flow stays put
+        assert "log-in" in result.flows["Vue Blocks"]
+
+    def test_api_call_failure_returns_zero(self):
+        class _ExplodingMessages:
+            def create(self, **kwargs):
+                raise RuntimeError("network down")
+
+        class _ExplodingClient:
+            messages = _ExplodingMessages()
+
+        result = _ds(
+            features={"Auth": ["a.ts"], "Vue Blocks": ["v.ts"]},
+            flows={"Vue Blocks": ["log-in"]},
+        )
+        # Should not raise — falls through to 0 moves
+        moves = judge_flow_attribution(result, client=_ExplodingClient())
+        assert moves == 0
+        assert "log-in" in result.flows["Vue Blocks"]
+
+
 class TestProtectedBuckets:
     def test_protected_set_includes_synthetics(self):
         from faultline.llm.flow_judge import _PROTECTED_BUCKETS

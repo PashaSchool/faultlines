@@ -76,6 +76,7 @@ def run(
     trace_flows: bool = False,
     rename_generic: bool = False,  # Fix #4: REVERTED — Haiku too conservative
     smart_aggregators: bool = False,  # Sprint 9: agentic 4-bucket classifier
+    flow_judge: bool = True,  # Sprint 11: Haiku-judged flow re-attribution
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -555,21 +556,41 @@ def run(
     # tracked as a future follow-up.
     result = _collapse_same_name_features(result)
 
-    # Stage 2.6: Flow re-attribution by name-token match. Some flows
-    # land on the wrong feature because the flow detector attaches
-    # flows by entry-point file ownership — but auth UI components
-    # might be in feature ``Auth`` while the route that triggers
-    # them lives in the parent ``Studio`` app shell. Result: ``Auth``
-    # has 38 files but 0 flows; flows like ``Authenticate with
-    # Password`` are stranded on ``Studio`` or ``Vue Blocks``.
+    # Stage 2.6: Flow re-attribution. Some flows land on the wrong
+    # feature because the flow detector attaches flows by entry-point
+    # file ownership — auth UI components might be in feature
+    # ``Auth`` while the route that triggers them lives in the parent
+    # ``Studio`` app shell. Result: ``Auth`` has 38 files but 0
+    # flows; flows like ``Authenticate with Password`` are stranded
+    # on ``Studio`` or ``Vue Blocks``.
     #
-    # Heuristic: for each flow, check if a DIFFERENT feature's name
-    # is a strong substring/token match for the flow name. When a
-    # match is unambiguously stronger than the current owner's match,
-    # move the flow. Conservative: requires the destination feature
-    # name to be ≥4 chars and to actually appear as a token in the
-    # flow name (not just any character overlap).
-    _reattribute_flows_by_name_match(result)
+    # Two-tier approach (Sprint 11):
+    #   1. Haiku judge — sees every flow + the full feature menu
+    #      and picks the best-fit owner. Catches semantic synonyms
+    #      the heuristic misses (``Sign in via OAuth`` → Auth even
+    #      without shared substring) and rejects false positives.
+    #      Costs ~$0.20 per scan; only acts on confidence ≥4.
+    #   2. Heuristic fallback — substring/token match. Runs when
+    #      no API key, anthropic package missing, or judge call
+    #      fails. Cheap ~30-50% recovery on the obvious cases.
+    judge_ran = False
+    if flow_judge:
+        try:
+            from faultline.llm.flow_judge import judge_flow_attribution
+            moves = judge_flow_attribution(
+                result,
+                api_key=api_key,
+                tracker=tracker,
+            )
+            judge_ran = True
+            logger.info("flow_judge: applied %d high-confidence moves", moves)
+        except Exception as exc:  # noqa: BLE001 — opportunistic; never block scan
+            logger.warning(
+                "flow_judge: stage failed (%s) — falling back to heuristic",
+                exc,
+            )
+    if not judge_ran:
+        _reattribute_flows_by_name_match(result)
 
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a

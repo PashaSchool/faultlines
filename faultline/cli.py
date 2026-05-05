@@ -183,6 +183,20 @@ def analyze(
         ),
         is_flag=True,
     ),
+    flow_judge: bool = typer.Option(
+        True,
+        "--flow-judge/--no-flow-judge",
+        help=(
+            "Sprint 11: Haiku-judged flow re-attribution. For each "
+            "detected flow, ask Haiku which feature it logically "
+            "belongs to (sees the full feature menu). Catches semantic "
+            "synonyms the substring heuristic misses — e.g. ``Sign in "
+            "via OAuth`` → Auth even without a shared substring. Adds "
+            "~$0.20 per scan. Falls back to the substring heuristic "
+            "when no API key. Pass --no-flow-judge to skip the LLM "
+            "call and use the heuristic only."
+        ),
+    ),
     trace_flows: bool = typer.Option(
         False,
         "--trace-flows",
@@ -624,6 +638,7 @@ def analyze(
                         critique=critique,
                         trace_flows=trace_flows,
                         smart_aggregators=smart_aggregators,
+                        flow_judge=flow_judge,
                         rename_generic=rename_generic,
                     )
                 except Exception as exc:  # pragma: no cover - surfacing guidance
