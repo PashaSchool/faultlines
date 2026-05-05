@@ -88,6 +88,41 @@ class FlowParticipant(BaseModel):
     role: str | None = None  # optional human-readable role hint
 
 
+class SharedParticipant(BaseModel):
+    """A file a feature USES but does not own (Sprint 8).
+
+    When the aggregator detector deletes a "shared-aggregator" feature
+    (e.g. a multi-domain DTOs package, or a shared-UI primitives lib),
+    each of its files is redistributed as a ``SharedParticipant`` on
+    every product feature that imports it. The same file can appear
+    on N features — that's the point: a Button.tsx used by 10
+    features should show up on all 10.
+
+    Distinguished from the existing ``Feature.paths`` (which stays
+    1:1 file→feature for owned source code, used by blame /
+    commit-attribution / health scoring).
+
+    ``role`` distinguishes how the file participates:
+        - ``consumer``: feature imports the file from elsewhere
+        - ``co-owner``: the redistribution found multiple consumers
+          and the file is essential to several (rare; surfaced for
+          dashboard filtering)
+
+    ``line_weight`` (0.0–1.0) carries forward existing line-scoped
+    attribution: if the consumer feature only references 12 of 100
+    lines in a file, it gets 0.12 weight in cross-feature metrics.
+    Defaults to 1.0 when fine-grained data isn't available.
+    """
+
+    file_path: str
+    role: str = "consumer"  # "consumer" | "co-owner"
+    line_weight: float = 1.0
+    origin_feature: str | None = None  # the deleted aggregator name,
+                                        # so the dashboard can show
+                                        # "from: Shared API Schemas"
+                                        # without losing provenance
+
+
 class SymbolAttribution(BaseModel):
     file_path: str                          # the shared file
     symbols: list[str]                      # symbol names attributed to this feature
@@ -132,6 +167,12 @@ class Feature(BaseModel):
     # symbol-scoped health and coverage.
     participants: list["FlowParticipant"] = []
     symbol_health_score: float | None = None           # health score weighted by symbol line ranges
+    # Sprint 8: files this feature CONSUMES from a deleted aggregator
+    # (DTO packages, shared-UI primitives, schema crates). Same file
+    # can appear on multiple features — that's the point. ``paths``
+    # stays the 1:1 owned-file list for blame / commit-attribution;
+    # this list is the additive N:M overlay.
+    shared_participants: list[SharedParticipant] = []
 
 
 class FeatureMap(BaseModel):

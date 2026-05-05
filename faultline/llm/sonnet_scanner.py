@@ -130,6 +130,17 @@ class DeepScanResult:
     flow_participants: dict[str, dict[str, list[Any]]] = field(
         default_factory=dict,
     )
+    # Sprint 8: redistribution map populated by aggregator_apply.py in
+    # Day 4. ``shared_participants_map[feature_name]`` lists files
+    # that the feature consumes from now-deleted aggregator features.
+    # Validation treats these as "covered" alongside owned paths so
+    # the orphan check doesn't flag them. Empty until Stage 1.6 runs.
+    # Stored as ``Any`` lists at the DeepScanResult level to avoid a
+    # circular import on faultline.models.types; the cli converts to
+    # SharedParticipant Pydantic objects at FeatureMap-build time.
+    shared_participants_map: dict[str, list[Any]] = field(
+        default_factory=dict,
+    )
 
     # ── dict read shims (legacy compat) ─────────────────────────────────
     def __getitem__(self, key: str) -> list[str]:

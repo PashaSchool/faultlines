@@ -458,7 +458,11 @@ def run(
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
     # silent fallback into shared-infra.
-    _validate_source_coverage(source_files, result.features)
+    _validate_source_coverage(
+        source_files,
+        result.features,
+        shared_participants_map=getattr(result, "shared_participants_map", None),
+    )
 
     # Stage 4 (Improvement #4): Auto-save discovered canonical names
     # back to ``.faultline.yaml`` so subsequent runs lock them
@@ -621,12 +625,20 @@ def _filter_workspace_sources(
 def _validate_source_coverage(
     source_files: list[str],
     features: dict[str, list[str]],
+    shared_participants_map: dict[str, list] | None = None,
 ) -> None:
     """Log a warning for any SOURCE file not attributed to any feature.
 
+    A file is "covered" if it appears as an owned path in some feature
+    OR as a shared_participant of some feature (Sprint 8 redistribution).
+    Sprint 8 deletes aggregator features and re-attributes their files
+    as shared_participants on consumers; without honoring the side-
+    channel here, every redistributed file would be flagged as an
+    orphan and silently re-folded into shared-infra, undoing the work.
+
     The legacy behaviour was a silent fold into ``shared-infra`` via the
     ``_fold_stragglers_into_infra`` helper — that made quality regressions
-    invisible. Here we surface orphans as a log warning AND still
+    invisible. Here we surface true orphans as a log warning AND still
     attribute them to ``shared-infra`` so downstream consumers don't
     choke on missing files. The two goals are not in tension: the user
     gets a working feature map AND we get a diagnostic signal.
@@ -634,6 +646,19 @@ def _validate_source_coverage(
     attributed: set[str] = set()
     for paths in features.values():
         attributed.update(paths)
+    # Sprint 8: a file consumed as a shared_participant counts as
+    # covered. Each entry in shared_participants_map[feat] is either a
+    # SharedParticipant Pydantic object (post-Day 4 wiring) or a dict /
+    # tuple legacy form; pull the file_path defensively.
+    if shared_participants_map:
+        for participants in shared_participants_map.values():
+            for p in participants:
+                fp = (
+                    getattr(p, "file_path", None)
+                    or (p.get("file_path") if isinstance(p, dict) else None)
+                )
+                if fp:
+                    attributed.add(fp)
     orphans = sorted(set(source_files) - attributed)
     if not orphans:
         return
