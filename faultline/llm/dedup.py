@@ -68,7 +68,8 @@ _PROTECTED_NAMES: frozenset[str] = frozenset({
 # to enumerate them in ``.faultline.yaml`` skip_features. List is
 # intentionally narrow: only names that are tooling in ~99% of repos.
 TOOLING_PACKAGE_NAMES: frozenset[str] = frozenset({
-    "tsconfig", "eslint-config", "prettier-config", "tailwind-config",
+    "tsconfig", "typescript-config",
+    "eslint-config", "prettier-config", "tailwind-config",
     "postcss-config", "babel-config", "stylelint-config",
     "vitest-config", "jest-config", "playwright-config",
     "config-eslint", "config-typescript", "config-prettier",
