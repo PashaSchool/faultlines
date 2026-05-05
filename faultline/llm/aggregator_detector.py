@@ -336,11 +336,12 @@ def classify_features(
         return {}
 
     if tracker is not None:
-        tracker.record_usage(
+        tracker.record(
+            provider="anthropic",
             model=chosen_model,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
-            stage="aggregator_detect",
+            label="aggregator_detect",
         )
 
     text = ""
