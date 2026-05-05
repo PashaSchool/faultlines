@@ -20,7 +20,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from faultline.llm.pipeline import _collapse_same_name_features
+from faultline.llm.pipeline import (
+    _collapse_same_name_features,
+    _flow_tokens,
+    _name_matches_flow,
+    _reattribute_flows_by_name_match,
+)
 from faultline.llm.sonnet_scanner import DeepScanResult
 from faultline.analyzer.features import _drop_noise_features
 from faultline.models.types import Feature
@@ -132,6 +137,32 @@ class TestCollapseSameName:
         })
         merged = _collapse_same_name_features(result)
         assert "shared-infra" in merged.features
+
+    def test_collapses_slash_prefixed_subdecompose_children(self):
+        """Sub_decompose creates slash-prefixed children like
+        ``parent/credentials``; without last-segment normalization
+        they don't collapse with sibling ``credentials``. n8n's
+        May 5 v2 leaked 3 duplicate pairs through Stage 2.5 for
+        exactly this reason. The fix is one line.
+        """
+        result = _ds({
+            "credentials": [
+                "packages/nodes-base/credentials/AwsAssumeRole.credentials.ts",
+                "packages/nodes-base/credentials/Bitbucket.credentials.ts",
+            ],
+            "n8n/credentials": [
+                "packages/frontend/editor-ui/src/features/credentials/quickConnect.api.ts",
+            ],
+            "Workflow Editor": ["apps/web/workflow-editor/canvas.tsx"],
+        })
+        merged = _collapse_same_name_features(result)
+        # Both Credentials variants collapsed to one
+        cred_keys = [n for n in merged.features if n.lower().rsplit("/", 1)[-1] == "credentials"]
+        assert len(cred_keys) == 1
+        # All 3 credential paths preserved on the canonical entry
+        assert len(merged.features[cred_keys[0]]) == 3
+        # Workflow Editor untouched
+        assert "Workflow Editor" in merged.features
 
     def test_post_pipeline_collapses_late_introduced_duplicates(self):
         """Regression: Sprint 9 May 5 scans produced n8n Credentials × 2
@@ -245,3 +276,135 @@ class TestDropNoiseFeatures:
         infra = next(f for f in kept if f.name == "shared-infra")
         assert infra.paths.count("common/a.ts") == 1
         assert sorted(infra.paths) == ["common/a.ts", "common/b.ts", "common/c.ts"]
+
+
+# ── Stage 2.6 — flow re-attribution by name-token match ─────────────
+
+
+class TestFlowTokens:
+    def test_splits_on_spaces_hyphens_underscores(self):
+        assert _flow_tokens("Authenticate with Password") == {"authenticate", "with", "password"}
+        assert _flow_tokens("manage-roles-flow") == {"manage", "roles", "flow"}
+        assert _flow_tokens("create_workflow_flow") == {"create", "workflow", "flow"}
+
+    def test_normalizes_to_lowercase(self):
+        assert "authenticate" in _flow_tokens("Authenticate")
+
+
+class TestNameMatchesFlow:
+    def test_full_token_match_scores_2(self):
+        assert _name_matches_flow("Auth", _flow_tokens("Authenticate Password")) >= 1
+        # Specifically: "auth" is substring of "authenticate" — score 1 (loose)
+        # AND if flow has bare token "auth" — score 2
+
+    def test_substring_match_scores_1(self):
+        # "auth" ⊂ "authenticate" → score 1 (loose)
+        score = _name_matches_flow("Auth", {"authenticate", "password"})
+        assert score == 1
+
+    def test_exact_token_scores_2(self):
+        # Feature "Auth" exactly matches token "auth"
+        score = _name_matches_flow("Auth", {"auth", "log", "in"})
+        assert score == 2
+
+    def test_short_feature_name_no_match(self):
+        # "AI" is too short (3 chars) to count as a meaningful match
+        # — would otherwise match every flow with an A in it
+        score = _name_matches_flow("AI", {"manage", "ai", "model"})
+        assert score == 0
+
+
+class TestReattributeFlows:
+    def test_moves_auth_flow_from_studio_to_auth(self):
+        """Supabase real case: Auth feature has 38 files but 0 flows;
+        ``Authenticate with Password`` flow stranded on Vue Blocks
+        because login form's entry point lives there."""
+        result = DeepScanResult(
+            features={
+                "Auth": ["studio/auth/RateLimits.tsx"],
+                "Vue Blocks": ["vue-blocks/login-form.vue"],
+            },
+            flows={
+                "Vue Blocks": ["Authenticate with Password"],
+            },
+            flow_descriptions={
+                "Vue Blocks": {"Authenticate with Password": "Login form."},
+            },
+        )
+        _reattribute_flows_by_name_match(result)
+        # Flow moved to Auth
+        assert "Authenticate with Password" in result.flows.get("Auth", [])
+        assert "Authenticate with Password" not in result.flows.get("Vue Blocks", [])
+        # Description migrated too
+        assert (
+            result.flow_descriptions.get("Auth", {}).get("Authenticate with Password")
+            == "Login form."
+        )
+
+    def test_does_not_move_when_current_owner_already_matches(self):
+        """If current owner's name already strongly matches flow tokens,
+        don't move (avoid bouncing flows around)."""
+        result = DeepScanResult(
+            features={
+                "Auth": ["src/auth/login.tsx"],
+                "Authentication": ["src/auth/signup.tsx"],
+            },
+            flows={
+                "Auth": ["Login Flow"],  # current owner is Auth, "auth"
+                                          # is substring of nothing in "login flow"
+            },
+        )
+        _reattribute_flows_by_name_match(result)
+        # No move — neither feature has stronger match than current
+        assert "Login Flow" in result.flows.get("Auth", [])
+
+    def test_protected_buckets_dont_steal_flows(self):
+        result = DeepScanResult(
+            features={
+                "Auth": ["src/auth/login.tsx"],
+                "shared-infra": ["build.config.ts"],
+            },
+            flows={
+                "Auth": ["Build Auth System"],  # "build" might match infra
+            },
+        )
+        _reattribute_flows_by_name_match(result)
+        # shared-infra is protected; flow stays on Auth
+        assert "Build Auth System" in result.flows.get("Auth", [])
+
+    def test_moves_multiple_flows_in_one_pass(self):
+        result = DeepScanResult(
+            features={
+                "Auth": ["a.ts"],
+                "Billing": ["b.ts"],
+                "Studio": ["s.ts"],
+            },
+            flows={
+                "Studio": [
+                    "Manage Auth Configuration",
+                    "View Billing Account",
+                    "Open Studio Dashboard",  # stays — "studio" ⊂ "studio"
+                ],
+            },
+        )
+        _reattribute_flows_by_name_match(result)
+        assert "Manage Auth Configuration" in result.flows.get("Auth", [])
+        assert "View Billing Account" in result.flows.get("Billing", [])
+        assert "Open Studio Dashboard" in result.flows.get("Studio", [])
+
+    def test_short_feature_names_dont_steal(self):
+        """``AI`` (2 chars) is too short to be a reliable match —
+        otherwise it would steal flows whose tokens contain 'ai' as
+        a substring (e.g. ``main``, ``email``)."""
+        result = DeepScanResult(
+            features={
+                "AI": ["a.ts"],
+                "Email": ["e.ts"],
+            },
+            flows={
+                "Email": ["Send Email"],  # AI's "ai" ⊂ "email" — but AI too short
+            },
+        )
+        _reattribute_flows_by_name_match(result)
+        assert "Send Email" in result.flows.get("Email", [])
+        assert result.flows.get("AI", []) == []

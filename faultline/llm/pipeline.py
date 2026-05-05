@@ -555,6 +555,22 @@ def run(
     # tracked as a future follow-up.
     result = _collapse_same_name_features(result)
 
+    # Stage 2.6: Flow re-attribution by name-token match. Some flows
+    # land on the wrong feature because the flow detector attaches
+    # flows by entry-point file ownership — but auth UI components
+    # might be in feature ``Auth`` while the route that triggers
+    # them lives in the parent ``Studio`` app shell. Result: ``Auth``
+    # has 38 files but 0 flows; flows like ``Authenticate with
+    # Password`` are stranded on ``Studio`` or ``Vue Blocks``.
+    #
+    # Heuristic: for each flow, check if a DIFFERENT feature's name
+    # is a strong substring/token match for the flow name. When a
+    # match is unambiguously stronger than the current owner's match,
+    # move the flow. Conservative: requires the destination feature
+    # name to be ≥4 chars and to actually appear as a token in the
+    # flow name (not just any character overlap).
+    _reattribute_flows_by_name_match(result)
+
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
     # silent fallback into shared-infra.
@@ -615,11 +631,18 @@ def _collapse_same_name_features(result: DeepScanResult) -> DeepScanResult:
     Synthetic buckets (``shared-infra``, ``documentation``, ``examples``)
     are never merge candidates even if they happened to coincide.
     """
+    # Normalize on the LAST path-segment so sub-decompose's slash-
+    # prefixed children (e.g. ``parent/credentials``) collapse with
+    # plain ``credentials``. n8n's May 5 v2 scan slipped 3 duplicate
+    # pairs through (AI Workflow Builder × 2, Instance AI × 2,
+    # Credentials × 2) precisely because Stage 2.5 was lowercase-only
+    # and treated ``parent/credentials`` as different from
+    # ``credentials``. Last-segment normalization fixes that.
     by_norm: dict[str, list[str]] = {}
     for name in result.features:
         if name in _PROTECTED_BUCKETS:
             continue
-        norm = name.strip().lower()
+        norm = name.strip().lower().rsplit("/", 1)[-1]
         by_norm.setdefault(norm, []).append(name)
 
     if all(len(v) == 1 for v in by_norm.values()):
@@ -659,6 +682,139 @@ def _collapse_same_name_features(result: DeepScanResult) -> DeepScanResult:
             collapsed,
         )
     return result
+
+
+_NAME_REATTRIBUTION_TOKEN_MIN = 4  # min chars for a feature-name token to count
+_NAME_REATTRIBUTION_PROTECTED: frozenset[str] = frozenset({
+    "shared-infra", "documentation", "examples",
+    "developer-infrastructure",
+})
+
+
+def _normalize_token(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def _flow_tokens(flow_name: str) -> set[str]:
+    """Tokenize a flow name into normalized lowercase tokens.
+
+    ``Authenticate with Password`` → {"authenticate", "with", "password"}
+    ``manage-roles-flow`` → {"manage", "roles", "flow"}
+    """
+    import re
+    parts = re.split(r"[\s\-_/]+", flow_name)
+    return {_normalize_token(p) for p in parts if p}
+
+
+def _name_matches_flow(feature_name: str, flow_tokens: set[str]) -> int:
+    """Score how strongly a feature name matches a flow's tokens.
+
+    Returns:
+        0 — no match
+        1 — feature-name appears as a SUBSTRING of any token (loose match,
+            e.g. ``auth`` ⊂ ``authenticate``)
+        2 — feature-name appears as a FULL token (strong match)
+    """
+    norm = _normalize_token(feature_name)
+    if len(norm) < _NAME_REATTRIBUTION_TOKEN_MIN:
+        return 0  # too short to be meaningful (avoids ``ai`` matching every flow)
+    if norm in flow_tokens:
+        return 2
+    for tok in flow_tokens:
+        if len(tok) >= _NAME_REATTRIBUTION_TOKEN_MIN and (
+            norm in tok or tok in norm
+        ):
+            return 1
+    return 0
+
+
+def _reattribute_flows_by_name_match(result: DeepScanResult) -> None:
+    """Move flows to features whose name better matches the flow's tokens.
+
+    Solves the ``supabase Auth feature has 38 files but 0 flows while
+    ``Authenticate with Password`` is stuck on Vue Blocks`` problem —
+    flow detector attaches flows by entry-point file ownership which
+    misses cases where UI components for a domain are split across
+    multiple features.
+
+    Conservative scoring: a destination feature must score AT LEAST 2
+    (full-token match) AND beat the current owner's score by ≥1 to
+    take a flow. Loose substring matches alone (score 1) don't move
+    flows — they're informative but too noisy on their own.
+
+    Mutates ``result.flows`` and ``result.flow_descriptions`` /
+    ``result.flow_participants`` in place. ``result.features`` (the
+    feature → owned-paths map) is untouched.
+    """
+    feature_names = [
+        n for n in result.features
+        if n not in _NAME_REATTRIBUTION_PROTECTED
+    ]
+    if not feature_names:
+        return
+
+    moved = 0
+    for current_owner in list(result.flows.keys()):
+        flow_list = result.flows.get(current_owner, [])
+        if not flow_list:
+            continue
+        new_owner_flows: dict[str, list[str]] = {}  # destination → moved flows
+        keep: list[str] = []
+
+        for flow_name in flow_list:
+            tokens = _flow_tokens(flow_name)
+            current_score = _name_matches_flow(current_owner, tokens)
+
+            # Find best alternate feature
+            best_alt = None
+            best_alt_score = 0
+            for fname in feature_names:
+                if fname == current_owner:
+                    continue
+                score = _name_matches_flow(fname, tokens)
+                if score > best_alt_score:
+                    best_alt = fname
+                    best_alt_score = score
+
+            # Conservative move rule. Two cases qualify:
+            #   (a) Strong match: alt scores ≥2 (full token) AND beats
+            #       current by ≥1
+            #   (b) Loose match: alt scores ≥1 AND current scores 0,
+            #       i.e. flow has zero connection to its current owner
+            #       but at least a substring match on alt. Catches the
+            #       supabase Auth case (``auth`` ⊂ ``authenticate``).
+            should_move = best_alt is not None and (
+                (best_alt_score >= 2 and best_alt_score > current_score)
+                or (best_alt_score >= 1 and current_score == 0)
+            )
+            if should_move:
+                new_owner_flows.setdefault(best_alt, []).append(flow_name)
+                moved += 1
+            else:
+                keep.append(flow_name)
+
+        # Apply moves: trim current owner's flows, append to destinations
+        result.flows[current_owner] = keep
+        for dest, fnames in new_owner_flows.items():
+            result.flows.setdefault(dest, []).extend(fnames)
+
+        # Migrate flow descriptions + participants too
+        for dest, fnames in new_owner_flows.items():
+            for fn in fnames:
+                src_descs = result.flow_descriptions.get(current_owner, {})
+                if fn in src_descs:
+                    result.flow_descriptions.setdefault(dest, {})[fn] = (
+                        src_descs.pop(fn)
+                    )
+                src_parts = result.flow_participants.get(current_owner, {})
+                if fn in src_parts:
+                    result.flow_participants.setdefault(dest, {})[fn] = (
+                        src_parts.pop(fn)
+                    )
+
+    if moved:
+        logger.info("pipeline: re-attributed %d flow(s) by name match", moved)
 
 
 def _auto_fold_tooling(result: DeepScanResult) -> None:
