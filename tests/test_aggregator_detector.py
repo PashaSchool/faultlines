@@ -243,6 +243,32 @@ class TestCoerceClassification:
 # ── _PROTECTED_NAMES coverage (regression guard) ──────────────────────
 
 
+class TestPromptTestInfraFoldRule:
+    """Pinning the rule that test infrastructure always folds —
+    never renames. Day 5 found ``E2E Auth Server`` was being
+    promoted to ``E2E Test Auth Server`` (a rename) instead of
+    folded into developer-infrastructure. Renames keep test scaffolds
+    visible on the dashboard; folding hides them under one drawer.
+    The system prompt now explicitly enumerates the always-fold
+    sub-cases. This test pins the prompt content so a regression
+    that drops the rule shows up in CI.
+    """
+
+    def test_prompt_lists_test_infra_as_always_fold(self):
+        from faultline.llm.aggregator_detector import _SYSTEM_PROMPT
+        assert "ALWAYS FOLD" in _SYSTEM_PROMPT
+        assert "E2E" in _SYSTEM_PROMPT
+        assert "test scaffolding" in _SYSTEM_PROMPT.lower()
+        assert "ci/cd" in _SYSTEM_PROMPT.lower()
+        # The rule must be unambiguous: proposed_name MUST be null
+        assert "proposed_name MUST be null" in _SYSTEM_PROMPT
+
+    def test_prompt_keeps_translations_as_rename_example(self):
+        # The rename branch still allows i18n → Translations
+        from faultline.llm.aggregator_detector import _SYSTEM_PROMPT
+        assert "Translations" in _SYSTEM_PROMPT
+
+
 class TestProtectedNames:
     def test_developer_infrastructure_protected(self):
         # Day 4 will materialize this synthetic bucket; classifier must

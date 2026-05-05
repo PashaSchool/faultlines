@@ -133,18 +133,41 @@ shared-aggregator
 developer-internal
   Real maintenance area but not a product feature. Devs work on
   this; product owners and CTOs don't think of it as a feature.
-  Examples:
-    - i18n locale JSON files (NOT translation-management UI)
-    - Internal documentation folders
-    - Static assets / images / fonts
-    - E2E test scaffolding
-    - Dev tooling scripts
-    - Migration scripts
-  When possible, propose a plain-English replacement name
-  ("Translations", "Internal Documentation", "Static Assets").
-  If the area is too miscellaneous to label, leave proposed_name
-  null — the pipeline will fold it into a generic
-  "developer-infrastructure" bucket.
+
+  Two sub-cases for ``proposed_name``:
+
+  (a) ALWAYS FOLD (proposed_name MUST be null):
+      Test infrastructure of any kind belongs here. No rename
+      makes a test scaffolding a feature; renaming "E2E Test Auth
+      Server" still leaves test infrastructure on the dashboard.
+      The right move is to fold into ``developer-infrastructure``
+      so a CTO sees one labelled drawer, not test scaffolds
+      promoted to feature names.
+        - E2E / integration / unit test scaffolding
+        - Test fixtures, mocks, stubs
+        - CI/CD pipeline configs (.github/workflows, .gitlab-ci.yml)
+        - Build pipelines, release scripts
+        - Mock servers, dev test stubs
+        - Benchmark / performance test harnesses
+        - Migration scripts (when they're internal one-shots, not
+          a long-running migrations product surface)
+        - Codegen output, generated stubs
+      Use proposed_name=null for ALL of these. The pipeline folds
+      them into the synthetic ``developer-infrastructure`` bucket.
+
+  (b) RENAME (proposed_name is the new business label):
+      Areas with a clear product-adjacent meaning that a CTO can
+      grasp from a single label, even though they aren't core
+      features themselves:
+        - i18n locale JSON files → "Translations"
+        - Internal-only docs site folders → "Internal Documentation"
+        - Static assets / images / fonts → "Static Assets" or
+          "Brand Assets" or "Icon Library"
+        - User-facing migration / upgrade flows → "Database
+          Migrations" or "Schema Versioning"
+      Only return a proposed_name when the rename is unambiguously
+      better than the original AND a CTO would understand the new
+      label without seeing code.
 
 tooling-infra
   Build, lint, test, format configs as workspace packages.
