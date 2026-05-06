@@ -254,3 +254,79 @@ def test_domain_tokens_have_no_overlap():
                 f"{seen.get(tok)} and {domain}"
             )
             seen[tok] = domain
+
+
+# ── Sprint 13 Day 2: broaden tokens + smarter menu match ─────────────
+
+
+def test_classify_recognises_authenticate_token():
+    assert classify_flow_domain("authenticate-webapp-user") == "auth"
+
+
+def test_classify_recognises_bare_auth_token():
+    assert classify_flow_domain("webapp-auth-flow") == "auth"
+
+
+def test_classify_recognises_sso_saml_oidc():
+    assert classify_flow_domain("user-sso-flow") == "auth"
+    assert classify_flow_domain("saml-callback-flow") == "auth"
+    assert classify_flow_domain("oidc-redirect-flow") == "auth"
+
+
+def test_classify_recognises_2fa_mfa():
+    assert classify_flow_domain("setup-2fa-flow") == "auth"
+    assert classify_flow_domain("verify-mfa-code-flow") == "auth"
+
+
+def test_classify_recognises_magic_link():
+    assert classify_flow_domain("send-magic-link-flow") == "auth"
+
+
+def test_menu_has_domain_recognises_account_settings():
+    """Account Settings is the auth-equivalent feature in dify."""
+    from faultline.llm.flow_cluster import _menu_has_domain
+    features = {
+        "App Navigation & Account Settings": ["x.ts"],
+        "i18n": ["t.ts"],
+    }
+    assert _menu_has_domain(features, "auth") is True
+
+
+def test_menu_has_domain_recognises_subscription_for_billing():
+    from faultline.llm.flow_cluster import _menu_has_domain
+    features = {"Subscription Plans": ["x.ts"]}
+    assert _menu_has_domain(features, "billing") is True
+
+
+def test_menu_has_domain_returns_false_when_no_hint_match():
+    from faultline.llm.flow_cluster import _menu_has_domain
+    features = {"Workflow App": [], "Datasets": [], "i18n": []}
+    assert _menu_has_domain(features, "auth") is False
+
+
+def test_dify_scenario_layer_a_skips_when_account_settings_exists():
+    """Reproduces the dify Sprint 12 live: 'Account Settings' should
+    block synthetic auth promotion."""
+    result = DeepScanResult(
+        features={
+            "App Navigation & Account Settings": [
+                "web/app/account/page.tsx",
+                "web/app/signin/page.tsx",
+            ],
+            "i18n": [
+                "web/app/forgot-password/page.tsx",
+                "web/i18n/en.json",
+            ],
+        },
+        flows={
+            "App Navigation & Account Settings": ["sign-in-flow"],
+            "i18n": [
+                "forgot-password-flow",
+                "reset-password-flow",
+                "verify-email-flow",
+            ],
+        },
+        descriptions={"App Navigation & Account Settings": "", "i18n": ""},
+    )
+    promos = plan_promotions(result)
+    assert all(p.domain != "auth" for p in promos)

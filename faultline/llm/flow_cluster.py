@@ -45,17 +45,41 @@ MIN_FLOWS = 3  # at least this many flows in a domain to promote
 # ``signin`` matches ``user-signin-flow`` and ``app/signin/page.tsx``).
 DOMAIN_TOKENS: dict[str, tuple[str, ...]] = {
     "auth": (
-        "signin", "sign-in", "signup", "sign-up", "login", "logout",
-        "password", "oauth", "register", "verify-email",
+        # Sprint 13 — broadened set after live dify scan showed
+        # `webapp-auth-flow`, `authenticate-webapp-user`,
+        # `verify-webapp-email-code` slipping through the original
+        # signin/login/password vocabulary.
+        "auth", "authenticate", "signin", "sign-in", "signup",
+        "sign-up", "login", "logout", "password", "oauth", "sso",
+        "saml", "oidc", "register", "verify-email",
         "email-verification", "reset-password", "forgot-password",
-        "two-factor", "activate-invited", "activate-account",
+        "two-factor", "2fa", "mfa", "magic-link",
+        "activate-invited", "activate-account", "session",
     ),
     "billing": (
         "billing", "subscription", "invoice", "payment",
-        "checkout", "pricing", "stripe", "refund",
+        "checkout", "pricing", "stripe", "refund", "plan-upgrade",
+        "downgrade-plan", "manage-plan",
     ),
     "notifications": (
-        "notification", "alert-rule",
+        "notification", "alert-rule", "push-notification",
+    ),
+}
+
+# Sprint 13 — features whose names don't literally contain a domain
+# token but ARE the domain feature. Without this lookup, Layer A would
+# wrongly create a synthetic ``auth`` feature next to an existing
+# ``Account Settings`` / ``Identity Management`` / ``Access Control``.
+_DOMAIN_FEATURE_NAME_HINTS: dict[str, tuple[str, ...]] = {
+    "auth": (
+        "account", "identity", "access control", "access-control",
+        "user management", "user-management", "session",
+    ),
+    "billing": (
+        "subscription", "payment", "plan", "checkout",
+    ),
+    "notifications": (
+        "alert", "alerting",
     ),
 }
 
@@ -99,9 +123,21 @@ def _path_matches_domain(path: str, domain: str) -> bool:
 
 
 def _menu_has_domain(features: dict[str, list[str]], domain: str) -> bool:
-    """True if any existing feature name contains the domain token."""
+    """True if any existing feature name covers the domain.
+
+    Direct hit: ``domain in name.lower()``.
+    Hint hit:   any of ``_DOMAIN_FEATURE_NAME_HINTS[domain]`` in name.
+
+    Sprint 13 — added hint match so ``Account Settings`` /
+    ``Identity Management`` / ``Subscription Plans`` correctly count
+    as the domain feature, blocking a redundant synthetic promotion.
+    """
+    hints = _DOMAIN_FEATURE_NAME_HINTS.get(domain, ())
     for name in features:
-        if domain in name.lower():
+        nl = name.lower()
+        if domain in nl:
+            return True
+        if any(h in nl for h in hints):
             return True
     return False
 
