@@ -680,30 +680,6 @@ def run(
                 exc,
             )
 
-    # Stage 2.75 (Sprint 13 Day 1): Re-judge with deterministic
-    # signals. After Layer B populated flow_participants with concrete
-    # symbol-bearing files, we now know each flow's actual file
-    # ownership distribution. Pick flows whose paths overwhelmingly
-    # belong to a feature OTHER than their current owner (the
-    # ``manage-billing-subscription``-in-``contracts`` class) and ask
-    # Haiku once more — this time with the per-feature ownership
-    # percentages in the prompt as evidence. Cheap (one batched call,
-    # only flows with strong disagreement, typically <20 of 200).
-    if flow_resignal and not is_library:
-        try:
-            from faultline.llm.flow_judge import re_judge_with_signals
-            moves = re_judge_with_signals(
-                result,
-                api_key=api_key,
-                tracker=tracker,
-            )
-            if moves:
-                logger.info(
-                    "flow_resignal: applied %d signal-based move(s)", moves,
-                )
-        except Exception as exc:  # noqa: BLE001 — opportunistic
-            logger.warning("flow_resignal: stage failed (%s) — skipping", exc)
-
     # Stage 2.8 (Sprint 12 Day 6): Layer C — entry-point sweep + cross-
     # validation. Every route handler / exported handler-pattern symbol
     # in the repo is harvested. Anything not already covered by a flow
@@ -733,6 +709,30 @@ def run(
             )
         except Exception as exc:  # noqa: BLE001 — opportunistic
             logger.warning("flow_sweep: stage failed (%s) — skipping", exc)
+
+    # Stage 2.85 (Sprint 14 Day 5 — moved from 2.75): Re-judge with
+    # deterministic signals. Originally placed at 2.75 (right after
+    # Layer B), but the dify Sprint 13 verdict showed
+    # ``sign-in-to-shared-webapp`` slipping through because
+    # tool_flows-attached flows had no participants for resignal to
+    # score. Stage 2.8 (Layer C sweep) populates participants for
+    # promoted flows; running resignal AFTER 2.8 lets it see the full
+    # picture. Cheap (one batched Haiku call, only flows with strong
+    # ownership disagreement against current owner).
+    if flow_resignal and not is_library:
+        try:
+            from faultline.llm.flow_judge import re_judge_with_signals
+            moves = re_judge_with_signals(
+                result,
+                api_key=api_key,
+                tracker=tracker,
+            )
+            if moves:
+                logger.info(
+                    "flow_resignal: applied %d signal-based move(s)", moves,
+                )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("flow_resignal: stage failed (%s) — skipping", exc)
 
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
