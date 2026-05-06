@@ -1,0 +1,165 @@
+{
+  "_schema": "faultlines-eval-ground-truth-v1",
+  "_legend": {
+    "expected_features": "Features the maintainer would name in their README — domain-level user-facing concepts, not file directories.",
+    "expected_flows": "Optional: user journeys / E2E flows the maintainer would call out.",
+    "source": "URL to the canonical features list (README, docs page).",
+    "annotated_by": "Reviewer's GitHub handle.",
+    "annotated_at": "ISO date.",
+    "needs_review": "Set true when annotation is best-guess and a maintainer review is welcome."
+  },
+  "axios": {
+    "expected_features": [
+      "http-client",
+      "interceptors",
+      "cancel-tokens",
+      "request-transforms",
+      "response-transforms",
+      "adapters",
+      "defaults",
+      "error-handling",
+      "retries",
+      "form-data-handling"
+    ],
+    "expected_flows": [
+      "intercept-request",
+      "intercept-response",
+      "cancel-pending-request",
+      "transform-form-data",
+      "retry-on-failure"
+    ],
+    "source": "https://github.com/axios/axios#features",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "needs_review": true
+  },
+  "immich": {
+    "expected_features": [
+      "asset-upload",
+      "library-management",
+      "albums",
+      "shared-albums",
+      "user-management",
+      "auth",
+      "search",
+      "machine-learning-tags",
+      "face-recognition",
+      "external-libraries",
+      "backup-and-sync",
+      "memories",
+      "map-view",
+      "sharing",
+      "settings"
+    ],
+    "expected_flows": [
+      "upload-photo",
+      "create-album",
+      "share-album-with-user",
+      "search-by-face",
+      "search-by-location",
+      "trigger-ml-job",
+      "sign-in",
+      "invite-user-to-shared-album"
+    ],
+    "source": "https://immich.app/docs/features",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "needs_review": true
+  },
+  "dify": {
+    "expected_features": [
+      "workflow-builder",
+      "knowledge-base",
+      "datasets",
+      "rag-pipeline",
+      "plugins",
+      "billing",
+      "auth",
+      "explore",
+      "shared-app",
+      "i18n",
+      "marketplace",
+      "model-providers",
+      "annotations",
+      "workspace-management",
+      "api-access"
+    ],
+    "expected_flows": [
+      "create-workflow",
+      "publish-workflow-app",
+      "import-dsl",
+      "create-dataset",
+      "configure-rag-pipeline",
+      "install-plugin",
+      "configure-model-provider",
+      "sign-in-to-console",
+      "manage-billing-subscription",
+      "invite-workspace-member"
+    ],
+    "source": "https://docs.dify.ai/",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "needs_review": true
+  },
+  "supabase": {
+    "expected_features": [
+      "auth",
+      "database",
+      "storage",
+      "edge-functions",
+      "realtime",
+      "vector-embeddings",
+      "row-level-security",
+      "studio-dashboard",
+      "billing",
+      "organizations",
+      "projects",
+      "api-gateway",
+      "logs-and-monitoring",
+      "sql-editor",
+      "table-editor"
+    ],
+    "expected_flows": [
+      "sign-up-via-email",
+      "sign-in-via-oauth",
+      "create-project",
+      "invite-organization-member",
+      "create-storage-bucket",
+      "deploy-edge-function",
+      "subscribe-to-realtime-channel",
+      "write-sql-in-editor"
+    ],
+    "source": "https://supabase.com/docs",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "needs_review": true
+  },
+  "fastapi": {
+    "expected_features": [
+      "routing",
+      "dependency-injection",
+      "request-validation",
+      "response-models",
+      "openapi-schema",
+      "middleware",
+      "background-tasks",
+      "websockets",
+      "security",
+      "testing-utilities",
+      "static-files",
+      "file-uploads"
+    ],
+    "expected_flows": [
+      "register-route",
+      "validate-request-body",
+      "inject-dependency",
+      "generate-openapi-spec",
+      "handle-websocket-message",
+      "authenticate-with-bearer-token"
+    ],
+    "source": "https://fastapi.tiangolo.com/features/",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "needs_review": true
+  }
+}
