@@ -344,9 +344,11 @@ def promote_unattached_as_flows(
                 usage = getattr(response, "usage", None)
                 if usage is not None:
                     tracker.record(
+                        provider="anthropic",
                         model=model,
-                        input_tokens=getattr(usage, "input_tokens", 0),
-                        output_tokens=getattr(usage, "output_tokens", 0),
+                        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                        label="flow_sweep_promote",
                     )
             except Exception:  # noqa: BLE001
                 pass
@@ -578,9 +580,11 @@ def cross_validate_neighbours(
                 usage = getattr(response, "usage", None)
                 if usage is not None:
                     tracker.record(
+                        provider="anthropic",
                         model=model,
-                        input_tokens=getattr(usage, "input_tokens", 0),
-                        output_tokens=getattr(usage, "output_tokens", 0),
+                        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                        label="flow_sweep_cross_val",
                     )
             except Exception:  # noqa: BLE001
                 pass

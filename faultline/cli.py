@@ -669,6 +669,23 @@ def analyze(
                         f"({_cost_summary['total_input_tokens']:,} in / "
                         f"{_cost_summary['total_output_tokens']:,} out)[/dim]"
                     )
+                    # Sprint 13 — per-stage cost breakdown so the
+                    # operator can see where Haiku layers (B, C,
+                    # re-judge) actually spent. Sorted by descending
+                    # cost so the biggest line is at the top.
+                    by_label = _cost_summary.get("by_label") or {}
+                    if len(by_label) > 1:
+                        sorted_labels = sorted(
+                            by_label.items(),
+                            key=lambda kv: -kv[1]["cost_usd"],
+                        )
+                        for label, stats in sorted_labels:
+                            console.print(
+                                f"[dim]  ├─ {label:24s} "
+                                f"${stats['cost_usd']:.3f}  "
+                                f"({stats['calls']} call"
+                                f"{'s' if stats['calls'] != 1 else ''})[/dim]"
+                            )
 
         # ── Workspace-aware analysis: per-package detection + merge ──
         _TS_JS_EXTS = {".ts", ".tsx", ".js", ".jsx"}
