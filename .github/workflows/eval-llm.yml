@@ -1,0 +1,82 @@
+name: eval-llm
+
+# Sprint 16 Day 3 — opt-in LLM eval, costs ~$0.20-1.50 per run.
+#
+# Triggered by either:
+#   - Adding the ``eval`` label to a PR targeting main
+#   - Manual workflow_dispatch from the Actions tab
+#
+# Reads benchmarks/<repo>/feature-map-final.json (or latest sprint-
+# live.json) for each ground-truth repo, runs LLM-as-judge to compute
+# coverage / precision / F1, posts a sticky PR comment with the
+# numbers + first few misses per repo.
+#
+# Default trigger is OPT-IN, not on every PR — keeps CI cost
+# predictable for solo / small teams. Smoke gate
+# (.github/workflows/eval-smoke.yml) handles the always-on regression
+# check for free.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Space-separated repo subset (default: all)"
+        required: false
+        default: ""
+
+concurrency:
+  group: eval-llm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  llm-eval:
+    name: Eval LLM (opt-in)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'eval' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: pip install -e '.[dev]'
+
+      - name: Run LLM eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p .faultline
+          if [ -n "${{ inputs.repos }}" ]; then
+            python scripts/eval_run.py --repos ${{ inputs.repos }} \
+              --json-out .faultline/eval-results.json
+          else
+            python scripts/eval_run.py \
+              --json-out .faultline/eval-results.json
+          fi
+
+      - name: Render PR comment
+        run: python scripts/eval_pr_comment.py .faultline/eval-results.json --out .faultline/pr-comment.md
+
+      - name: Upload eval artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: .faultline/
+
+      - name: Post sticky PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: faultlines-eval
+          path: .faultline/pr-comment.md
