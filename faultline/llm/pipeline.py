@@ -78,6 +78,7 @@ def run(
     smart_aggregators: bool = False,  # Sprint 9: agentic 4-bucket classifier
     flow_judge: bool = True,  # Sprint 11: Haiku-judged flow re-attribution
     flow_cluster: bool = True,  # Sprint 12: virtual cluster promotion (Layer A)
+    flow_symbols: bool = True,  # Sprint 12: per-flow symbol resolution (Layer B)
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -623,6 +624,42 @@ def run(
     if not judge_ran:
         _reattribute_flows_by_name_match(result)
 
+    # Stage 2.7 (Sprint 12 Day 5): Per-flow symbol resolution. For
+    # every flow, ask Haiku which exported symbols actually
+    # participate in the user journey, then resolve to {file,
+    # start_line, end_line} via ast_extractor. The output lives in
+    # ``result.flow_participants`` and the CLI builds it into
+    # ``Flow.participants[].symbols`` at FeatureMap-build time.
+    #
+    # This is the foundation for per-flow test-coverage attribution:
+    # once we know which symbols a flow exercises and which line
+    # ranges they occupy, we can intersect with coverage data to
+    # surface real per-flow coverage % instead of feature averages.
+    #
+    # Skipped on libraries (no flows there). Best-effort — wraps in
+    # try/except so a Haiku outage never blocks the scan.
+    if flow_symbols and not is_library and repo_root is not None:
+        try:
+            from faultline.llm.flow_symbols import resolve_flow_symbols
+            populated = resolve_flow_symbols(
+                result,
+                source_loader=_make_source_loader(repo_root),
+                api_key=api_key,
+                tracker=tracker,
+                repo_slug=repo_root.name if repo_root else None,
+            )
+            if populated:
+                logger.info(
+                    "flow_symbols: populated %d flow(s) with symbol ranges",
+                    populated,
+                )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning(
+                "flow_symbols: stage failed (%s) — flows will keep file-level "
+                "participants from prior stages",
+                exc,
+            )
+
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
     # silent fallback into shared-infra.
@@ -663,6 +700,32 @@ def run(
 
 
 _PROTECTED_BUCKETS = frozenset({"shared-infra", "documentation", "examples"})
+
+
+def _make_source_loader(repo_root):
+    """Closure: rel_path → source text (or None on failure).
+
+    Sprint 12 Day 5 — feeds flow_symbols. Reads files lazily from the
+    repo working tree. Skips files >256 KB (binary / minified) so the
+    Haiku prompt doesn't drown in transitive bundle output.
+    """
+    from pathlib import Path
+
+    root = Path(repo_root) if not isinstance(repo_root, Path) else repo_root
+    _MAX_BYTES = 256 * 1024
+
+    def _load(rel: str) -> str | None:
+        try:
+            path = root / rel
+            if not path.is_file():
+                return None
+            if path.stat().st_size > _MAX_BYTES:
+                return None
+            return path.read_text(encoding="utf-8", errors="ignore")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    return _load
 
 
 def _collapse_same_name_features(result: DeepScanResult) -> DeepScanResult:

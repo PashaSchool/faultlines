@@ -1528,13 +1528,26 @@ def _inject_new_pipeline_flows(
             )
             participants: list[FlowParticipant] = []
             for tp in per_flow_traces.get(name, []) or []:
-                participants.append(FlowParticipant(
-                    path=tp.file,
-                    layer=tp.layer or "support",
-                    depth=tp.depth,
-                    side_effect_only=tp.side_effect_only,
-                    symbols=list(tp.symbols),
-                ))
+                # Sprint 12 Day 5 — flow_symbols Stage 2.7 writes dict
+                # entries (so the side channel is JSON-serialisable
+                # across the pipeline). Sprint 7 trace_flows writes
+                # TracedParticipant attrs. Support both shapes.
+                if isinstance(tp, dict):
+                    participants.append(FlowParticipant(
+                        path=tp.get("path") or "",
+                        layer=tp.get("layer") or "support",
+                        depth=int(tp.get("depth") or 0),
+                        side_effect_only=bool(tp.get("side_effect_only")),
+                        symbols=list(tp.get("symbols") or []),
+                    ))
+                else:
+                    participants.append(FlowParticipant(
+                        path=tp.file,
+                        layer=tp.layer or "support",
+                        depth=tp.depth,
+                        side_effect_only=tp.side_effect_only,
+                        symbols=list(tp.symbols),
+                    ))
 
             # P3: drop hallucinated flows. A flow with 0 participants
             # AND no entry_point recorded by Sonnet got NO file
