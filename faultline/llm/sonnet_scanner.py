@@ -392,12 +392,13 @@ _TARGET_REPO = (
 
 _TARGET_PACKAGE_TEMPLATE = (
     "## Target\n\n"
-    "This is a single package within a monorepo (name: `{package_name}`). "
-    "Return **1-8 features** for this package only — NOT 12-25. If the package "
-    "has a single cohesive purpose (e.g. `auth`, `db`, `cli`), return ONE feature "
-    "named after the package. Only split into multiple features if you can identify "
-    "2 or more distinct business sub-domains from the file paths. **HARD CAP: never "
-    "more than 8 features for a single package, ever.**\n\n"
+    "This is a single package within a monorepo (name: `{package_name}`, "
+    "{package_size} files). Return **1-{cap} features** for this package only — "
+    "NOT 12-25. If the package has a single cohesive purpose (e.g. `auth`, `db`, "
+    "`cli`), return ONE feature named after the package. Only split into multiple "
+    "features if you can identify 2 or more distinct business sub-domains from "
+    "the file paths. **HARD CAP: never more than {cap} features for a single "
+    "package, ever.**\n\n"
     "**Anti-pattern — NEVER emit catch-all leftover names.** The post-processor "
     "now flags these as bugs:\n"
     "- `<pkg>/shell`, `<pkg>/core`, `<pkg>/common`, `<pkg>/main`, `<pkg>/app`, "
@@ -474,10 +475,27 @@ _TARGET_LIBRARY = (
 )
 
 
+def _compute_package_cap(file_count: int) -> int:
+    """Sprint 14 Day 2 — dynamic feature cap per package size.
+
+    Replaces the prompt-level hard cap of 8 with size-based scaling:
+    a 30-file package gets 4 max, a 200-file package gets 15 max.
+    Floor 3 to avoid forcing 1-feature output on tiny packages where
+    Sonnet has perfectly good 2-3 sub-domains. Ceiling 15 keeps the
+    prompt budget bounded.
+
+    Formula: ``max(3, min(15, file_count // 8))``.
+    """
+    if file_count <= 0:
+        return 3
+    return max(3, min(15, file_count // 8))
+
+
 def _build_system_prompt(
     *,
     package_mode: bool = False,
     package_name: str | None = None,
+    package_size: int = 0,
     is_library: bool = False,
 ) -> str:
     """Render the system prompt with the right ``## Target`` block.
@@ -500,8 +518,13 @@ def _build_system_prompt(
     if package_mode:
         # Use .replace, not .format — the template body contains literal
         # '{' from JSON examples that would otherwise need double-escaping.
+        cap = _compute_package_cap(package_size)
         target = _TARGET_PACKAGE_TEMPLATE.replace(
             "{package_name}", package_name or "unknown"
+        ).replace(
+            "{package_size}", str(package_size or "unknown")
+        ).replace(
+            "{cap}", str(cap)
         )
     elif is_library:
         target = _TARGET_LIBRARY
@@ -1243,6 +1266,7 @@ def deep_scan(
     tracker: CostTracker | None = None,
     package_mode: bool = False,
     package_name: str | None = None,
+    package_size: int = 0,
     commit_context: str | None = None,
     preferred_names: list[str] | None = None,
 ) -> DeepScanResult | None:
@@ -1296,6 +1320,7 @@ def deep_scan(
     system_prompt = _build_system_prompt(
         package_mode=package_mode,
         package_name=package_name,
+        package_size=package_size or len(files),
         is_library=is_library,
     )
 
@@ -1944,6 +1969,7 @@ def deep_scan_workspace(
                     tracker=tracker,
                     package_mode=True,
                     package_name=pkg.name,
+                    package_size=len(pkg_files_rel),
                     commit_context=commit_context,
                     preferred_names=preferred_names,
                 )
