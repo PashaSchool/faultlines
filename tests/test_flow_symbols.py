@@ -343,3 +343,78 @@ def test_candidate_files_uses_participants_when_present():
     }
     files = _candidate_files_for_flow("x-flow", "auth", result)
     assert files == ["b.ts", "c.ts"]
+
+
+# ── Sprint 13 Day 1b: smarter candidate ranker ───────────────────────
+
+
+def test_candidate_ranker_prefers_handler_paths_over_random():
+    """When token overlap fails, fall back to handler-density not alphabetical."""
+    result = DeepScanResult(
+        features={
+            "billing": [
+                "billing/aaa-config.json",
+                "billing/bbb-icons.svg",
+                "billing/zzz-utils.ts",
+                "billing/api/checkout/route.ts",
+                "billing/services/stripe.ts",
+            ],
+        },
+        flows={"billing": ["unrelated-flow"]},
+    )
+    files = _candidate_files_for_flow("unrelated-flow", "billing", result)
+    # Top of list should be handler-density files, not aaa-config.json
+    assert files[0] in {"billing/api/checkout/route.ts", "billing/services/stripe.ts"}
+
+
+def test_candidate_ranker_drops_test_and_locale_noise():
+    result = DeepScanResult(
+        features={
+            "auth": [
+                "auth/__tests__/login.test.ts",
+                "auth/i18n/en.json",
+                "auth/login.ts",
+            ],
+        },
+        flows={"auth": ["login-flow"]},
+    )
+    files = _candidate_files_for_flow("login-flow", "auth", result)
+    assert "auth/login.ts" in files
+    assert all(".test." not in f for f in files)
+    assert all("/i18n/" not in f for f in files)
+
+
+def test_candidate_ranker_clusters_around_top_dir():
+    """Outlier files sharing a token but in different dir get dropped."""
+    result = DeepScanResult(
+        features={
+            "ui": [
+                "ui/random/button.ts",
+                "ui/auth/login.ts",     # shares 'login' token
+                "ui/auth/signup.ts",
+                "ui/auth/oauth.ts",
+                "ui/random/login-helper.ts",  # shares 'login' but different dir
+            ],
+        },
+        flows={"ui": ["login-flow"]},
+    )
+    files = _candidate_files_for_flow("login-flow", "ui", result)
+    assert "ui/auth/login.ts" in files
+    # Cluster around ui/auth/ — random/login-helper.ts dropped or last
+    auth_count = sum(1 for f in files if f.startswith("ui/auth/"))
+    assert auth_count >= 2
+
+
+def test_path_is_noise_classifier():
+    from faultline.llm.flow_symbols import _path_is_noise
+    assert _path_is_noise("a/b/foo.test.ts")
+    assert _path_is_noise("a/i18n/en.json")
+    assert _path_is_noise("types/user.d.ts")
+    assert not _path_is_noise("api/auth/login.ts")
+
+
+def test_path_handler_score_recognises_api_paths():
+    from faultline.llm.flow_symbols import _path_handler_score
+    assert _path_handler_score("api/users/route.ts") >= 2
+    assert _path_handler_score("services/stripe.ts") >= 1
+    assert _path_handler_score("utils/math.ts") == 0

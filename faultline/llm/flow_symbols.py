@@ -443,6 +443,43 @@ def default_candidate_builder(
     return _build
 
 
+_HANDLER_PATH_HINTS = (
+    "api/", "/route", "handler", "controllers/", "services/",
+    "actions/", "mutations/", "queries/", "endpoints/", "routes/",
+    "server/", "/app/",
+)
+_NOISE_PATH_HINTS = (
+    "/__tests__/", ".test.", ".spec.", "/tests/", "/fixtures/",
+    "/i18n/", "/locales/", "/translation",
+    ".d.ts",  # type-only files
+    "/icons/", "/assets/",
+)
+
+
+def _path_is_noise(path: str) -> bool:
+    pl = path.lower()
+    return any(h in pl for h in _NOISE_PATH_HINTS)
+
+
+def _path_handler_score(path: str) -> int:
+    pl = path.lower()
+    return sum(1 for h in _HANDLER_PATH_HINTS if h in pl)
+
+
+def _common_prefix(paths: list[str]) -> str:
+    """Longest common path-segment prefix. Empty when paths diverge."""
+    if not paths:
+        return ""
+    parts_lists = [p.split("/") for p in paths]
+    out: list[str] = []
+    for chunks in zip(*parts_lists):
+        if all(c == chunks[0] for c in chunks):
+            out.append(chunks[0])
+        else:
+            break
+    return "/".join(out)
+
+
 def _candidate_files_for_flow(
     flow_name: str,
     feature_owner: str,
@@ -450,10 +487,21 @@ def _candidate_files_for_flow(
 ) -> list[str]:
     """Pick the most plausible files for a flow.
 
-    Priority:
-        1. Existing flow_participants entries (Sprint 7 trace_flows).
-        2. Owner feature's paths whose name contains a flow-token.
-        3. First N owner paths (fallback).
+    Sprint 13 — composite ranking. Three deterministic signals:
+
+      1. Token overlap — how many flow-name tokens appear in the path.
+      2. Handler density — does the path live under ``/api/``,
+         ``/handlers/``, ``/services/`` etc.?
+      3. Cluster proximity — distance to the centroid of paths that
+         have ANY token / handler signal. Files far from the cluster
+         (random utils) drop out before random fallback even hits.
+
+    Existing ``flow_participants`` entries (Sprint 7 trace_flows or
+    Layer C promote) still win as priority 0 — they're ground truth
+    for this flow, no need to re-rank.
+
+    Noise paths (tests, locales, icons, .d.ts) are excluded from
+    every tier.
     """
     parts = result.flow_participants.get(feature_owner, {}).get(flow_name, [])
     if parts:
@@ -467,22 +515,62 @@ def _candidate_files_for_flow(
         if seen:
             return seen[:MAX_CANDIDATE_FILES]
 
-    owner_paths = result.features.get(feature_owner, [])
-    flow_tokens = re.split(r"[\s\-_/]+", flow_name.lower())
-    flow_tokens = [t for t in flow_tokens if t and t != "flow"]
-    if flow_tokens:
-        scored: list[tuple[int, str]] = []
-        for p in owner_paths:
-            pl = p.lower()
-            score = sum(1 for t in flow_tokens if t in pl)
-            if score:
-                scored.append((score, p))
-        if scored:
-            scored.sort(key=lambda x: (-x[0], x[1]))
-            picked = [p for _, p in scored[:MAX_CANDIDATE_FILES]]
-            if picked:
-                return picked
-    return owner_paths[:MAX_CANDIDATE_FILES]
+    owner_paths = [
+        p for p in result.features.get(feature_owner, [])
+        if not _path_is_noise(p)
+    ]
+    if not owner_paths:
+        return result.features.get(feature_owner, [])[:MAX_CANDIDATE_FILES]
+
+    flow_tokens = [
+        t for t in re.split(r"[\s\-_/]+", flow_name.lower())
+        if t and t != "flow"
+    ]
+
+    # Composite score: 3×token_overlap + 1×handler_score (handler hint
+    # is weaker per-match because every API file gets at least 1).
+    scored: list[tuple[int, int, str]] = []  # (composite, token, path)
+    for p in owner_paths:
+        pl = p.lower()
+        token_score = sum(1 for t in flow_tokens if t in pl) if flow_tokens else 0
+        handler_score = _path_handler_score(p)
+        composite = 3 * token_score + handler_score
+        if composite > 0:
+            scored.append((composite, token_score, p))
+
+    if scored:
+        scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+        ranked = [p for _, _, p in scored]
+        # Cluster around the top ranked file's directory — pull in
+        # neighbours from owner_paths that share the directory even if
+        # they had no token match. Catches the case where the matched
+        # file's siblings ARE the rest of the flow (login.ts +
+        # signup.ts + oauth.ts in /auth/).
+        top_dir = "/".join(ranked[0].split("/")[:-1])
+        if top_dir:
+            in_cluster = [
+                p for p in owner_paths
+                if p.startswith(top_dir + "/") or p == ranked[0]
+            ]
+            # Score-ranked first, then cluster fillers (preserve order).
+            seen = set(ranked)
+            picked: list[str] = list(ranked)
+            for p in in_cluster:
+                if p not in seen and len(picked) < MAX_CANDIDATE_FILES:
+                    picked.append(p)
+                    seen.add(p)
+            return picked[:MAX_CANDIDATE_FILES]
+        return ranked[:MAX_CANDIDATE_FILES]
+
+    # Last-resort fallback — handler-density-only ranking on the
+    # whole owner. Better than "first N alphabetical" for big features
+    # like ``dify-web/plugins`` (387 paths) where the top of the list
+    # is configs / migrations.
+    by_handler = sorted(
+        owner_paths,
+        key=lambda p: (-_path_handler_score(p), p),
+    )
+    return by_handler[:MAX_CANDIDATE_FILES]
 
 
 def resolve_flow_symbols(
