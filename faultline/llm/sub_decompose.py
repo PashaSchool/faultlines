@@ -279,6 +279,7 @@ def sub_decompose_oversized(
     tracker: "CostTracker | None" = None,
     tool_budget: int = DEFAULT_TOOL_BUDGET,
     locked_names: frozenset[str] | None = None,
+    retain_parent: bool = True,
 ) -> "DeepScanResult":
     """Walk ``result.features`` and split anything above ``threshold``.
 
@@ -405,16 +406,29 @@ def sub_decompose_oversized(
         if sub_features is None:
             continue
 
-        # Apply the split. Remove the parent entry, write each sub-
-        # feature under ``{name}/{sub_name}``.
+        # Apply the split. Either remove the parent entry (legacy) or
+        # keep it as an aggregator (Sprint 14 Day 4 default).
         parent_desc = result.descriptions.get(name, "")
         parent_flows = list(result.flows.get(name, []))
         parent_flow_descs = dict(result.flow_descriptions.get(name, {}))
+        parent_paths_full = list(result.features.get(name, []))
 
-        result.features.pop(name, None)
-        result.descriptions.pop(name, None)
-        result.flows.pop(name, None)
-        result.flow_descriptions.pop(name, None)
+        if not retain_parent:
+            result.features.pop(name, None)
+            result.descriptions.pop(name, None)
+            result.flows.pop(name, None)
+            result.flow_descriptions.pop(name, None)
+        else:
+            # Keep parent as aggregator: name + description survive
+            # for the high-level tile, but paths/flows move to subs
+            # so blame/coverage code never double-counts a file. The
+            # dashboard renders the parent as a roll-up header and
+            # the subs as drill-downs.
+            result.features[name] = []
+            result.flows[name] = []
+            result.flow_descriptions[name] = {}
+            if name in getattr(result, "flow_participants", {}):
+                result.flow_participants.pop(name, None)
 
         # Largest sub-feature inherits the parent's flows + flow_descs
         # so we don't lose downstream attribution. Subsequent sub-
@@ -431,7 +445,8 @@ def sub_decompose_oversized(
             if i == 0:
                 primary_key = full_key
 
-        if primary_key is not None:
+        if primary_key is not None and not retain_parent:
+            # Legacy behaviour: parent gone, largest sub inherits flows.
             if parent_flows and primary_key not in result.flows:
                 result.flows[primary_key] = parent_flows
             if parent_flow_descs and primary_key not in result.flow_descriptions:
@@ -441,6 +456,18 @@ def sub_decompose_oversized(
             # its own.
             if parent_desc and primary_key not in result.descriptions:
                 result.descriptions[primary_key] = parent_desc
+        elif primary_key is not None and retain_parent and parent_flows:
+            # New behaviour: parent stays as aggregator. Distribute
+            # parent's flows across subs by simple round-robin so they
+            # don't all dogpile on the largest. flow_descriptions
+            # follow the same target key.
+            for i, fname in enumerate(parent_flows):
+                target = sub_features[i % len(sub_features)]
+                target_key = f"{name}/{target['name']}"
+                result.flows.setdefault(target_key, []).append(fname)
+                desc = parent_flow_descs.get(fname)
+                if desc:
+                    result.flow_descriptions.setdefault(target_key, {})[fname] = desc
 
         logger.info(
             "sub_decompose: %s (%d files) → %d sub-features",

@@ -118,6 +118,16 @@ RULES
   or "examples" — those are synthetic.
 - Do NOT merge features whose descriptions describe different
   responsibilities even if names overlap.
+- Sprint 14 — DIFFERENT ACTORS or DIFFERENT EVENTS are NEVER
+  duplicates. ``Onboard Employee`` vs ``Onboard Contractor`` use
+  similar tooling but represent different business processes:
+  separate compliance checks, different approval flows, different
+  data models. Same for ``Renew Subscription`` vs ``Cancel
+  Subscription`` — same actor (account owner) but different events
+  with different downstream effects. When the input describes a
+  flow's actor (employee, contractor, admin, public viewer) or
+  event (signup, renewal, cancellation, refund, dispute) and those
+  differ across the candidates, leave them separate.
 - Each "from" group must contain at least 2 distinct features.
 - Cap total merges at 12 groups per pass.
 - It is OK to return {"merges": []} when nothing genuinely

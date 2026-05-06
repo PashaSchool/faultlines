@@ -301,7 +301,7 @@ class TestSubDecomposeOversized:
         out = sub_decompose_oversized(
             result, threshold=200, repo_root=tmp_path, client=client,
         )
-        assert "big-feature" not in out.features
+        assert out.features["big-feature"] == []  # S14: retained as aggregator
         assert "big-feature/alpha" in out.features
         assert "big-feature/beta" in out.features
         assert sorted(out.features["big-feature/alpha"]) == sorted(a)
@@ -352,14 +352,15 @@ class TestSubDecomposeOversized:
         out = sub_decompose_oversized(
             result, threshold=200, repo_root=tmp_path, client=client,
         )
-        # alpha is largest → inherits flows + flow_descs + parent desc
-        assert "big/alpha" in out.flows
-        assert out.flows["big/alpha"] == ["create-thing", "delete-thing"]
+        # S14 retain_parent=True default: flows distributed round-robin
+        # across subs (no longer all on the largest). create-thing → alpha
+        # (i=0), delete-thing → beta (i=1). flow_descriptions follow the
+        # same target. Parent ("big") stays as aggregator with empty paths.
+        assert out.flows.get("big/alpha") == ["create-thing"]
+        assert out.flows.get("big/beta") == ["delete-thing"]
         assert out.flow_descriptions["big/alpha"]["create-thing"] == "make stuff"
-        assert out.descriptions["big/alpha"] == "parent desc"
-        # beta has neither
-        assert "big/beta" not in out.flows
-        assert "big/beta" not in out.flow_descriptions
+        # Parent retained: empty paths/flows but description preserved.
+        assert out.features["big"] == []
 
     def test_no_repo_root_skips_pass(self, tmp_path):
         files = [f"f{i}.ts" for i in range(250)]
@@ -403,7 +404,7 @@ class TestSubDecomposeOversized:
         out = sub_decompose_oversized(
             result, threshold=200, repo_root=tmp_path, client=client,
         )
-        assert "big-feature" not in out.features
+        assert out.features["big-feature"] == []  # S14: retained as aggregator
         assert "big-feature/alpha" in out.features
         assert "big-feature/beta" in out.features
 
@@ -450,5 +451,78 @@ class TestSubDecomposeOversized:
             result, threshold=200, repo_root=tmp_path, client=client,
         )
         # 250-file feature should still split (over 200 default)
+        assert out.features.get("big", "missing") in (None, [], "missing")
+        assert "big/alpha" in out.features
+
+
+# ── Sprint 14 Day 4: parent retention ─────────────────────────────────
+
+
+class TestSubDecomposeRetainParent:
+    def test_legacy_mode_removes_parent(self, tmp_path):
+        from faultline.llm.sub_decompose import sub_decompose_oversized
+
+        files = [f"f{i}.ts" for i in range(250)]
+        result = _result({"big": files})
+        a = files[:200]
+        b = files[200:]
+        import json
+        client = FakeClient([_resp(json.dumps({
+            "features": [
+                {"name": "alpha", "paths": a},
+                {"name": "beta",  "paths": b},
+            ]
+        }))])
+        out = sub_decompose_oversized(
+            result, threshold=200, repo_root=tmp_path, client=client,
+            retain_parent=False,
+        )
         assert "big" not in out.features
         assert "big/alpha" in out.features
+
+    def test_default_retain_parent_keeps_aggregator(self, tmp_path):
+        """retain_parent=True (default) keeps the parent with empty paths."""
+        from faultline.llm.sub_decompose import sub_decompose_oversized
+
+        files = [f"f{i}.ts" for i in range(250)]
+        result = _result({"big": files})
+        a = files[:200]
+        b = files[200:]
+        import json
+        client = FakeClient([_resp(json.dumps({
+            "features": [
+                {"name": "alpha", "paths": a},
+                {"name": "beta",  "paths": b},
+            ]
+        }))])
+        out = sub_decompose_oversized(
+            result, threshold=200, repo_root=tmp_path, client=client,
+        )
+        assert "big" in out.features
+        assert out.features["big"] == []  # paths moved to subs
+        # Subs still carry every file
+        union = set(out.features["big/alpha"]) | set(out.features["big/beta"])
+        assert union == set(files)
+
+    def test_retain_parent_distributes_flows_round_robin(self, tmp_path):
+        """3 flows + 2 subs → 2-1 split via round-robin."""
+        from faultline.llm.sub_decompose import sub_decompose_oversized
+
+        files = [f"f{i}.ts" for i in range(250)]
+        result = _result({"big": files})
+        result.flows["big"] = ["flow-a", "flow-b", "flow-c"]
+        a = files[:200]
+        b = files[200:]
+        import json
+        client = FakeClient([_resp(json.dumps({
+            "features": [
+                {"name": "alpha", "paths": a},
+                {"name": "beta",  "paths": b},
+            ]
+        }))])
+        out = sub_decompose_oversized(
+            result, threshold=200, repo_root=tmp_path, client=client,
+        )
+        # Round-robin: a→alpha, b→beta, c→alpha
+        assert out.flows.get("big/alpha") == ["flow-a", "flow-c"]
+        assert out.flows.get("big/beta") == ["flow-b"]
