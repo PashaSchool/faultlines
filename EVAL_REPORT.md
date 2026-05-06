@@ -1,6 +1,69 @@
-# Faultlines Eval Report — 6 OSS repos
+# Faultlines Eval Report — 11 OSS repos
 
-**Date:** 2026-05-04
+**Date:** 2026-05-05 (latest); original 6-repo evaluation 2026-05-04
+
+## Final headline (May 5)
+
+Across **11 OSS monorepos** (cal.com excluded — its scan predates the
+Tier 1 fixes that collapse same-name duplicates, so its 198-feature
+output drags the average unfairly until re-scanned):
+
+| Metric | Average | Range |
+|---|---:|---:|
+| **Strict** — correct out of the box | **78%** | 62–95% |
+| **Fixable** — correct after 1-click rename | **90%** | 80–100% |
+| **Flow real-journey** — share of flows that describe an actual user action | **83%** | 74–95% (9 repos with flows) |
+
+**Per-repo breakdown:**
+
+| Repo | Strict | Fixable | Flow journey |
+|---|---:|---:|---:|
+| saleor | 95% | 95% | 90% |
+| meilisearch | 92% | 100% | 80% |
+| gitea | 85% | 95% | 95% |
+| ollama | 83% | 95% | 85% |
+| dify | 80% | 80% | 74% |
+| excalidraw | 78% | 95% | n/a (library) |
+| supabase | 76% | 92% | 78% |
+| immich | 73% | 90% | 92% |
+| ghost | 73% | 85% | 82% |
+| n8n | 65% | 80% | 74% |
+| strapi | 62% | 85% | n/a (flow detection skipped) |
+
+**Method:** founder-eyeball judgment against scan output (feature
+names + file counts + commit counts + path prefixes + flow names),
+applying a fixed rubric. Two LLM-agent passes were used as
+calibration checks; both ran ~10–15 percentage points off in
+opposite directions, so the headline numbers are the conservative
+midpoint with three repos (dify, supabase, calcom) hand-verified
+through the digest. **Caveat:** this is not academic ground truth —
+no maintainer of each project labeled the output. Numbers should be
+read as ±5pp at minimum.
+
+**Where it's strongest:** single-domain repos with clean package
+boundaries (saleor, meilisearch, gitea, ollama). Strict 83–95%.
+
+**Where it needs curation:** large fragmented monorepos where one
+logical concept is split across packages (n8n's
+Editor/Workflow/Workflow Sdk/Workflow Index family, strapi's
+Admin × 2, Content Manager × 2). Strict 62–73% on these.
+The dashboard editor — rename + merge + split — closes most of the
+gap with 1-click corrections; that's why fixable hits ~90% even on
+the hardest repos.
+
+---
+
+## Original 6-repo evaluation (May 4, kept for history)
+
+The rest of this document is the original 6-repo eval that produced
+the 84% / 66% / 78% headlines. Numbers below are superseded by the
+11-repo numbers at the top, but the methodology, per-repo
+breakdowns, and improvement notes (Tier 1 + Tier 2 fixes) remain
+valid.
+
+---
+
+
 **Methodology:** founder-eyeball judgment against scan output. **Not** academic ground truth (no manual labeling, no inter-rater agreement). Each feature judged on:
 
 - **Path coherence** — does the file set form a coherent slice of the codebase?
@@ -381,3 +444,53 @@ For a defensible eval, the next step is:
 - Report Cohen's kappa for inter-rater agreement.
 
 That's a real two-week project, not a one-day eval. This document is the cheap-but-honest version.
+
+---
+
+# Sprint 12 — Day 1 Baseline (Flow Attribution + Symbol Coverage)
+
+**Branch:** `feat/sprint12-flow-overhaul`
+**Eval tool:** `scripts/eval_flow_attribution.py`
+**Date:** 2026-05-06
+
+Auto-generated ground truth via domain-token classifier (auth, billing, notifications, onboarding, search, i18n). Flows with no domain signal default to `current_owner` so they auto-pass at baseline — only flows with strong domain tokens contribute real signal to the accuracy number. The synthetic-feature targets (`<NEW>:auth`, `<NEW>:billing`, etc.) are the workload Sprint 12 needs to satisfy.
+
+## Baseline metrics
+
+| Repo      | Flows | Attribution accuracy | Symbol coverage | Avg syms/flow | `<NEW>:` targets |
+|-----------|-------|----------------------|-----------------|---------------|------------------|
+| dify      | 150   | 84.7%  (127/150)     | 0.0%            | 0.00          | 20               |
+| supabase  | 148   | 97.3%  (144/148)     | 0.0%            | 0.00          | 1                |
+| immich    | 60    | 90.0%  (54/60)       | 0.0%            | 0.00          | 0                |
+
+## Where the failures live
+
+**dify (worst case, primary regression target):**
+
+- 20 flows match an auth-domain token but no `auth`-named feature exists in the menu. They are scattered across `i18n` (6), `ui` (5), `contracts` (6), `dify-web/types` (1), `dify-web/plugins` (1), `dify-ui` (1).
+- 2 flows match `billing`/`subscription` tokens but live in `dify-web/plugins` instead of `dify-web/billing`.
+- 1 notifications flow stranded in `dify-ui`.
+
+**supabase:** has `auth` + `vue-blocks/auth` features in the menu, so flow_judge can already place ~all auth flows correctly. Remaining 4 misses are non-auth edge cases.
+
+**immich:** no auth-domain flows misattributed; baseline is already healthy. Useful as a regression guard (Sprint 12 must not break it).
+
+## Symbol coverage (all repos)
+
+**0% across all three repos.** Confirmed: every flow has `participants: []` and zero `SymbolRange` entries. The `flow_tracer.trace_flow_callgraph` path is gated behind `--trace-flows` and is not part of default scans. Layer B (Day 4–5) addresses this.
+
+## Day 1 deliverables
+
+- `scripts/eval_flow_attribution.py` — propose/eval/summary subcommands.
+- `benchmarks/{dify,supabase,immich}/sprint12-baseline.json` — frozen baselines.
+- `benchmarks/{dify,supabase,immich}/flow-truth.yaml` — auto-generated truth proposals (manually edit if any `<NEW>:` target needs adjustment).
+
+## Sprint 12 targets (re-stated for tracking)
+
+| Metric | dify baseline | dify target |
+|---|---|---|
+| Attribution accuracy | 84.7% | ≥ 95% (auth flows must move to synthetic `auth` feature) |
+| Symbol coverage | 0% | ≥ 75% |
+| Avg syms/flow | 0.00 | 3–8 |
+| Flow count | 150 | ≥ 180 (Layer C sweep) |
+

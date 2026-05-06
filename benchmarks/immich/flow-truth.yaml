@@ -1,0 +1,305 @@
+_schema: sprint12-flow-truth-v1
+_legend:
+  expected_feature: exact feature name from menu, or '<NEW>:<domain>' if a synthetic
+    feature is needed, or '<DROP>' to mark bogus flow
+flows:
+- name: login-flow
+  current_owner: web
+  expected_feature: e2e-auth-server
+  domain: auth
+  note: domain=auth; menu has e2e-auth-server
+- name: logout-flow
+  current_owner: immich-web/auth
+  expected_feature: e2e-auth-server
+  domain: auth
+  note: domain=auth; menu has e2e-auth-server
+- name: add-asset-to-album-flow
+  current_owner: immich-web/asset-viewer
+  expected_feature: immich-web/asset-viewer
+  domain: null
+  note: no-domain-signal; default keep
+- name: add-to-album-flow
+  current_owner: plugins
+  expected_feature: plugins
+  domain: null
+  note: no-domain-signal; default keep
+- name: administer-users-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: authenticate-flow
+  current_owner: cli
+  expected_feature: cli
+  domain: null
+  note: no-domain-signal; default keep
+- name: browse-assets-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: browse-shared-links-flow
+  current_owner: immich-web/user
+  expected_feature: immich-web/user
+  domain: null
+  note: no-domain-signal; default keep
+- name: browse-ui-components-flow
+  current_owner: mobile
+  expected_feature: mobile
+  domain: null
+  note: no-domain-signal; default keep
+- name: check-server-info-flow
+  current_owner: cli
+  expected_feature: cli
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-workflows-flow
+  current_owner: immich-web/shared-components
+  expected_feature: immich-web/shared-components
+  domain: null
+  note: no-domain-signal; default keep
+- name: create-documentation-flow
+  current_owner: documentation
+  expected_feature: documentation
+  domain: null
+  note: no-domain-signal; default keep
+- name: create-immich-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: create-immich-web/shared-components-flow
+  current_owner: immich-web/shared-components
+  expected_feature: immich-web/shared-components
+  domain: null
+  note: no-domain-signal; default keep
+- name: create-memory-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: delete-asset-flow
+  current_owner: immich-web/asset-viewer
+  expected_feature: immich-web/asset-viewer
+  domain: null
+  note: no-domain-signal; default keep
+- name: delete-documentation-flow
+  current_owner: documentation
+  expected_feature: documentation
+  domain: null
+  note: no-domain-signal; default keep
+- name: delete-immich-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: delete-web-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: download-assets-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: edit-asset-description-flow
+  current_owner: immich-web/asset-viewer
+  expected_feature: immich-web/asset-viewer
+  domain: null
+  note: no-domain-signal; default keep
+- name: edit-asset-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: edit-shared-link-flow
+  current_owner: immich-web/user
+  expected_feature: immich-web/user
+  domain: null
+  note: no-domain-signal; default keep
+- name: initialize-sdk-flow
+  current_owner: sdk
+  expected_feature: sdk
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-account-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-albums-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-api-keys-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-api-keys-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-api-keys-flow
+  current_owner: immich-web/shared-components
+  expected_feature: immich-web/shared-components
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-database-backups-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-faces-flow
+  current_owner: immich-web/shared-components
+  expected_feature: immich-web/shared-components
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-job-queue-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-library-flow
+  current_owner: immich-web/shared-components
+  expected_feature: immich-web/shared-components
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-maintenance-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-map-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-people-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-stacks-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-stacks-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-system-config-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-trash-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-users-flow
+  current_owner: immich-web/user
+  expected_feature: immich-web/user
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-workflows-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: preview-email-templates-flow
+  current_owner: immich-web/shared-components
+  expected_feature: immich-web/shared-components
+  domain: null
+  note: no-domain-signal; default keep
+- name: read-privacy-policy-flow
+  current_owner: documentation
+  expected_feature: documentation
+  domain: null
+  note: no-domain-signal; default keep
+- name: restart-server-flow
+  current_owner: immich-web/maintenance
+  expected_feature: immich-web/maintenance
+  domain: null
+  note: no-domain-signal; default keep
+- name: search-assets-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: search-assets-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: select-assets-flow
+  current_owner: immich-web/asset-viewer
+  expected_feature: immich-web/asset-viewer
+  domain: null
+  note: no-domain-signal; default keep
+- name: stream-media-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: switch-documentation-version-flow
+  current_owner: documentation
+  expected_feature: documentation
+  domain: null
+  note: no-domain-signal; default keep
+- name: sync-data-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: update-documentation-flow
+  current_owner: documentation
+  expected_feature: documentation
+  domain: null
+  note: no-domain-signal; default keep
+- name: update-web-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: upload-asset-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
+- name: upload-assets-flow
+  current_owner: cli
+  expected_feature: cli
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-activity-flow
+  current_owner: web
+  expected_feature: web
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-backup-history-flow
+  current_owner: immich-web/maintenance
+  expected_feature: immich-web/maintenance
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-server-info-flow
+  current_owner: immich-web/maintenance
+  expected_feature: immich-web/maintenance
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-shared-album-flow
+  current_owner: immich-web/user
+  expected_feature: immich-web/user
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-timeline-flow
+  current_owner: immich
+  expected_feature: immich
+  domain: null
+  note: no-domain-signal; default keep
