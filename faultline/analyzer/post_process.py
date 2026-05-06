@@ -78,6 +78,19 @@ _LAYER_DIR_PREFIXES = frozenset({
 })
 
 
+# Sprint 16 — domain prefixes owned by flow_cluster's Layer A. Commit-
+# prefix mining must NOT create a parallel feature with these names
+# because Layer A already groups domain-correct paths under the
+# canonical domain feature (auth/billing/notifications) or the
+# workspace-named carrier (dify-web/i18n).
+_DOMAIN_PROTECTED_PREFIXES = frozenset({
+    "auth", "authentication", "authn", "authz",
+    "billing", "subscription", "subscriptions", "payment", "payments",
+    "notification", "notifications", "alert", "alerts",
+    "i18n", "i10n", "intl", "locale", "locales", "translation", "translations",
+})
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _top_prefix(path: str) -> str:
@@ -461,6 +474,16 @@ def commit_prefix_enrichment_pass(
 
     log_lines: list[str] = []
     feature_names = {f.name for f in features}
+    # Sprint 16 — token lookup over feature names. Splits each name on
+    # ``/`` and ``-`` so ``dify-web/i18n`` covers ``i18n``, ``dify-ui``
+    # covers ``ui``, ``packages/auth`` covers ``auth``. Prevents
+    # commit_prefix_enrichment_pass from creating a parallel feature
+    # that cannibalises Layer A's path attribution.
+    feature_tokens: set[str] = set()
+    for _n in feature_names:
+        for tok in re.split(r"[/\-]", _n.lower()):
+            if tok:
+                feature_tokens.add(tok)
     path_to_feature: dict[str, Feature | None] = {}
     for f in features:
         for p in f.paths:
@@ -473,6 +496,17 @@ def commit_prefix_enrichment_pass(
         if prefix in feature_names:
             continue
         if any(n.startswith(prefix + "/") for n in feature_names):
+            continue
+        # Sprint 16 — domain prefixes (auth, billing, notifications,
+        # i18n) are owned by Layer A's flow_cluster; let it manage
+        # them, don't create a parallel commit-mined twin that
+        # cannibalises Layer A's path attribution.
+        if prefix.lower() in _DOMAIN_PROTECTED_PREFIXES:
+            continue
+        # Sprint 16 — also block when the prefix matches any token of
+        # an existing feature name (workspace monorepos: ``dify-web/i18n``
+        # blocks ``i18n``, ``dify-ui`` blocks ``ui``).
+        if prefix.lower() in feature_tokens:
             continue
         if prefix in _COMMIT_TYPE_WORDS:
             continue
