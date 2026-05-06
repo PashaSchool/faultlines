@@ -838,9 +838,36 @@ def _collapse_same_name_features(result: DeepScanResult) -> DeepScanResult:
         return result  # no duplicates to collapse
 
     collapsed = 0
+    renamed = 0
     for norm, names in sorted(by_norm.items()):
         if len(names) <= 1:
             continue
+
+        # Sprint 14 Day 3 — path-aware: if duplicates have disjoint
+        # path sets, they're DIFFERENT business features that share
+        # only a label (n8n's backend/Credentials vs frontend/Credentials).
+        # Rename with parent-dir prefix instead of merging.
+        path_sets = {n: set(result.features[n]) for n in names}
+        if _path_sets_disjoint(path_sets.values()):
+            new_names = _disjoint_rename(names, path_sets)
+            for old, new in new_names.items():
+                if old == new:
+                    continue
+                # Don't overwrite an existing feature on rename
+                if new in result.features:
+                    continue
+                result.features[new] = result.features.pop(old)
+                if old in result.descriptions:
+                    result.descriptions[new] = result.descriptions.pop(old)
+                if old in result.flows:
+                    result.flows[new] = result.flows.pop(old)
+                if old in result.flow_descriptions:
+                    result.flow_descriptions[new] = result.flow_descriptions.pop(old)
+                if old in getattr(result, "flow_participants", {}):
+                    result.flow_participants[new] = result.flow_participants.pop(old)
+                renamed += 1
+            continue
+
         # Canonical: most paths wins, alphabetical tiebreak (deterministic)
         canonical = max(names, key=lambda n: (len(result.features[n]), -ord(n[0]) if n else 0))
         # Alphabetical tiebreak: re-sort if multiple names tie on path count
@@ -870,7 +897,103 @@ def _collapse_same_name_features(result: DeepScanResult) -> DeepScanResult:
             "pipeline: collapsed %d same-name duplicate feature(s)",
             collapsed,
         )
+    if renamed:
+        logger.info(
+            "pipeline: prefix-renamed %d disjoint same-name feature(s)",
+            renamed,
+        )
     return result
+
+
+def _path_sets_disjoint(path_sets) -> bool:
+    """True when no two sets in the iterable share a single path.
+
+    Sprint 14 Day 3 — gate for the rename-instead-of-merge path.
+    Strict zero-overlap rule: any single shared file means the
+    features genuinely overlap and the merge is correct.
+    """
+    sets = list(path_sets)
+    if len(sets) < 2:
+        return False
+    for i in range(len(sets)):
+        for j in range(i + 1, len(sets)):
+            if sets[i] & sets[j]:
+                return False
+    return True
+
+
+def _disjoint_rename(
+    names: list[str],
+    path_sets: dict[str, set[str]],
+) -> dict[str, str]:
+    """Compute prefix-rename map for a set of disjoint duplicates.
+
+    The prefix is the longest path-segment that uniquely identifies
+    each feature relative to its peers. Example:
+        names = ["Credentials", "Credentials"]
+        paths = {
+          name1: {"packages/cli/credentials/...", ...},
+          name2: {"packages/frontend/credentials/...", ...},
+        }
+    Produces: {"Credentials": "cli/Credentials", ...} —
+    the first differing path segment.
+
+    Falls back to numeric suffix on edge cases (paths empty,
+    common prefix is the whole tree).
+    """
+    if not names or len(names) < 2:
+        return {n: n for n in names}
+
+    # Compute the longest common path prefix across ALL features.
+    all_paths_per_feature = [path_sets[n] for n in names if path_sets[n]]
+    if not all_paths_per_feature:
+        return {n: f"{n}-{i + 1}" for i, n in enumerate(names)}
+
+    common_prefix_segs = _longest_common_path_prefix(all_paths_per_feature)
+
+    out: dict[str, str] = {}
+    used_prefixes: set[str] = set()
+    for i, name in enumerate(sorted(names)):
+        paths = path_sets[name]
+        if not paths:
+            out[name] = f"{name}-{i + 1}"
+            continue
+        # Take ANY path; first differing segment after common prefix
+        sample = next(iter(sorted(paths)))
+        segs = sample.split("/")
+        first_unique = "feature"
+        if len(segs) > len(common_prefix_segs):
+            first_unique = segs[len(common_prefix_segs)]
+        # Disambiguate against already-used prefix
+        prefix = first_unique
+        suffix = 1
+        while prefix in used_prefixes:
+            suffix += 1
+            prefix = f"{first_unique}-{suffix}"
+        used_prefixes.add(prefix)
+        out[name] = f"{prefix}/{name}"
+    return out
+
+
+def _longest_common_path_prefix(path_sets: list[set[str]]) -> list[str]:
+    """Longest common path-segment prefix across every feature's
+    path set. Uses the first sorted path of each set as the
+    representative — sufficient because if all paths in a feature
+    share a prefix, any one of them does."""
+    reps: list[list[str]] = []
+    for s in path_sets:
+        if not s:
+            continue
+        reps.append(sorted(s)[0].split("/"))
+    if not reps:
+        return []
+    common: list[str] = []
+    for chunks in zip(*reps):
+        if all(c == chunks[0] for c in chunks):
+            common.append(chunks[0])
+        else:
+            break
+    return common
 
 
 _NAME_REATTRIBUTION_TOKEN_MIN = 4  # min chars for a feature-name token to count
