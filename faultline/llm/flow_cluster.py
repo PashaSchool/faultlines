@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 MIN_FLOWS = 3  # at least this many flows in a domain to promote
 
+# Sprint 15 Day 1 — backfill mode trigger. If an existing domain-named
+# feature has fewer paths than this threshold AND ≥ MIN_FLOWS catch-all
+# flows match the domain, we promote into the existing feature instead
+# of skipping. Catches the dify case where Sonnet emitted a 5-path
+# ``auth`` feature from a tiny package and Layer A wrongly considered
+# the domain "covered".
+MIN_DOMAIN_PATHS = 15
+
 # Tokens are matched case-insensitively against normalised
 # (``-``-joined) names and paths. Token must be substring (e.g.
 # ``signin`` matches ``user-signin-flow`` and ``app/signin/page.tsx``).
@@ -97,10 +105,15 @@ class Promotion:
     domain: str
     flows_to_move: list[tuple[str, str]] = field(default_factory=list)
     paths_to_move: list[tuple[str, str]] = field(default_factory=list)
+    # Sprint 15 — when set, backfill into THIS existing feature
+    # instead of creating a new one named after the domain. Used
+    # when Sonnet emitted a small domain-named feature and Layer A
+    # needs to grow it from catch-all owners.
+    target_feature: str | None = None
 
     @property
     def feature_name(self) -> str:
-        return self.domain  # "auth", "billing", etc.
+        return self.target_feature or self.domain  # "auth", "billing", etc.
 
 
 def _normalise(s: str) -> str:
@@ -173,23 +186,42 @@ def plan_promotions(result: DeepScanResult) -> list[Promotion]:
                 by_domain.setdefault(domain, []).append((owner, flow_name))
 
     for domain, occurrences in by_domain.items():
-        # 2. Skip if a domain-named feature already exists.
-        if _menu_has_domain(result.features, domain):
-            logger.debug(
-                "flow_cluster: skip domain=%s (feature already in menu)",
-                domain,
-            )
-            continue
         # 3. Skip if not enough flows.
         unique_owners = {o for o, _ in occurrences}
         if len(occurrences) < MIN_FLOWS:
             continue
 
+        # 2. Decide whether to create / backfill / skip based on what's
+        # already in the menu (Sprint 15 — was just "skip if exists").
+        existing = _find_domain_feature(result.features, domain)
+        target_feature: str | None = None
+        if existing is not None:
+            existing_path_count = len(result.features.get(existing, []))
+            # Catch-all flows are stranded if their owner is NOT the
+            # domain feature itself.
+            stranded = [o for o, _ in occurrences if o != existing]
+            if existing_path_count >= MIN_DOMAIN_PATHS or len(stranded) < MIN_FLOWS:
+                logger.debug(
+                    "flow_cluster: skip domain=%s — feature %r already "
+                    "covered (%d paths, %d stranded flows)",
+                    domain, existing, existing_path_count, len(stranded),
+                )
+                continue
+            # Backfill mode: existing feature is undersized AND there
+            # are enough stranded flows to justify growing it.
+            target_feature = existing
+            logger.info(
+                "flow_cluster: backfill mode for domain=%s into %r "
+                "(%d existing paths, %d stranded flows)",
+                domain, existing, existing_path_count, len(stranded),
+            )
+
         # 4. For each owner of these flows, collect paths that match the
-        #    domain. Skip protected (synthetic) owners.
+        #    domain. Skip protected (synthetic) owners AND the existing
+        #    domain feature itself (we already own those paths).
         paths_to_move: list[tuple[str, str]] = []
         for owner in unique_owners:
-            if _is_protected_owner(owner):
+            if _is_protected_owner(owner) or owner == target_feature:
                 continue
             owner_paths = result.features.get(owner, [])
             for p in owner_paths:
@@ -204,34 +236,76 @@ def plan_promotions(result: DeepScanResult) -> list[Promotion]:
             )
             continue
 
+        # Filter flows: never move flows whose current owner IS the
+        # backfill target (they're already there).
+        flows_filtered = [
+            (o, fn) for o, fn in occurrences if o != target_feature
+        ]
         promotions.append(Promotion(
             domain=domain,
-            flows_to_move=list(occurrences),
+            flows_to_move=flows_filtered,
             paths_to_move=paths_to_move,
+            target_feature=target_feature,
         ))
         logger.info(
-            "flow_cluster: planning promotion domain=%s, flows=%d, paths=%d",
-            domain, len(occurrences), len(paths_to_move),
+            "flow_cluster: planning %s domain=%s, flows=%d, paths=%d",
+            "backfill" if target_feature else "promotion",
+            domain, len(flows_filtered), len(paths_to_move),
         )
 
     return promotions
+
+
+def _find_domain_feature(
+    features: dict[str, list[str]],
+    domain: str,
+) -> str | None:
+    """Return the name of the existing feature that covers ``domain``,
+    or ``None`` if no such feature exists in the menu.
+
+    Sprint 15 — extracts the lookup logic from ``_menu_has_domain``
+    so callers can also inspect the matching feature's path count.
+    """
+    hints = _DOMAIN_FEATURE_NAME_HINTS.get(domain, ())
+    for name in features:
+        nl = name.lower()
+        if domain in nl:
+            return name
+        if any(h in nl for h in hints):
+            return name
+    return None
 
 
 def apply_promotions(
     result: DeepScanResult,
     promotions: list[Promotion],
 ) -> int:
-    """Mutate ``result`` in place. Returns count of features created."""
+    """Mutate ``result`` in place.
+
+    Returns count of features created (excluding backfills into
+    existing features). For tests that count "did anything happen",
+    use ``len(promotions)`` instead.
+    """
     created = 0
     for promo in promotions:
         feat = promo.feature_name
         if feat in result.features:
-            # Defensive — _menu_has_domain should have filtered this out,
-            # but if a prior promotion created the feature, append to it.
-            logger.warning(
-                "flow_cluster: feature %r already exists; merging",
-                feat,
-            )
+            # Sprint 15 — backfill or defensive append. For backfills
+            # this is the expected path. For accidental duplicates
+            # (target_feature unset) we still merge silently.
+            if promo.target_feature:
+                logger.info(
+                    "flow_cluster: backfilling %d paths + %d flows into "
+                    "existing %r",
+                    len(promo.paths_to_move),
+                    len(promo.flows_to_move),
+                    feat,
+                )
+            else:
+                logger.warning(
+                    "flow_cluster: feature %r already exists; merging",
+                    feat,
+                )
         else:
             result.features[feat] = []
             result.flows.setdefault(feat, [])

@@ -112,10 +112,10 @@ def test_plan_promotes_auth_when_no_auth_feature():
     assert "web/components/Button.tsx" not in moved_paths
 
 
-def test_plan_skips_when_auth_feature_exists():
-    """If feature menu already has 'auth', don't promote."""
+def test_plan_skips_when_auth_feature_well_covered():
+    """Sprint 15 — when 'auth' has ≥ MIN_DOMAIN_PATHS, no backfill."""
     result = _result_dify_minimal()
-    result.features["auth"] = ["server/auth/handler.ts"]
+    result.features["auth"] = [f"server/auth/{i}.ts" for i in range(20)]
     promos = plan_promotions(result)
     assert all(p.domain != "auth" for p in promos)
 
@@ -304,14 +304,15 @@ def test_menu_has_domain_returns_false_when_no_hint_match():
     assert _menu_has_domain(features, "auth") is False
 
 
-def test_dify_scenario_layer_a_skips_when_account_settings_exists():
-    """Reproduces the dify Sprint 12 live: 'Account Settings' should
-    block synthetic auth promotion."""
+def test_dify_scenario_layer_a_skips_only_when_account_settings_well_covered():
+    """Sprint 15 — 'Account Settings' blocks promotion only when it's
+    already large enough (≥ MIN_DOMAIN_PATHS). When undersized AND
+    flows are stranded, backfill mode is the correct response."""
+    # Well-covered case: ≥ MIN_DOMAIN_PATHS files → skip.
     result = DeepScanResult(
         features={
             "App Navigation & Account Settings": [
-                "web/app/account/page.tsx",
-                "web/app/signin/page.tsx",
+                f"web/app/account/{i}.tsx" for i in range(20)
             ],
             "i18n": [
                 "web/app/forgot-password/page.tsx",
@@ -330,3 +331,159 @@ def test_dify_scenario_layer_a_skips_when_account_settings_exists():
     )
     promos = plan_promotions(result)
     assert all(p.domain != "auth" for p in promos)
+
+
+# ── Sprint 15 Day 1: Layer A backfill mode ────────────────────────────
+
+
+def test_backfill_into_existing_undersized_auth_feature():
+    """The dify regression case: Sonnet emits tiny 'auth' (5 paths),
+    but i18n holds 6 stranded auth flows with auth-named paths."""
+    result = DeepScanResult(
+        features={
+            # Sonnet's tiny auth feature
+            "auth": [
+                "packages/auth-utils/sso.ts",
+                "packages/auth-utils/jwt.ts",
+            ],
+            # Catch-all bucket holding the real auth surface
+            "i18n": [
+                "web/i18n/en.ts",
+                "web/app/signin/page.tsx",
+                "web/app/signup/page.tsx",
+                "web/app/forgot-password/page.tsx",
+                "web/app/reset-password/page.tsx",
+            ],
+        },
+        flows={
+            "auth": ["sso-provider-flow"],
+            "i18n": [
+                "sign-in-to-console",
+                "verify-email-login-code",
+                "reset-password-flow",
+                "oauth-authorization-flow",
+            ],
+        },
+        descriptions={"auth": "auth surface", "i18n": "translations"},
+    )
+    promos = plan_promotions(result)
+    auth_promos = [p for p in promos if p.domain == "auth"]
+    assert len(auth_promos) == 1
+    promo = auth_promos[0]
+    # Backfill: target_feature is the existing 'auth'
+    assert promo.target_feature == "auth"
+    # 4 stranded flows from i18n promoted (existing auth's flow excluded)
+    assert len(promo.flows_to_move) == 4
+    flow_names = {fn for _, fn in promo.flows_to_move}
+    assert "sign-in-to-console" in flow_names
+    # 4 auth-named paths from i18n promoted
+    moved_paths = {p for _, p in promo.paths_to_move}
+    assert "web/app/signin/page.tsx" in moved_paths
+    assert "web/app/forgot-password/page.tsx" in moved_paths
+    # Translation files NOT promoted
+    assert "web/i18n/en.ts" not in moved_paths
+
+
+def test_apply_backfill_grows_existing_feature():
+    """End-to-end: backfill paths + flows land on the existing feature."""
+    result = DeepScanResult(
+        features={
+            "auth": ["packages/auth-utils/sso.ts"],
+            "i18n": [
+                "web/app/signin/page.tsx",
+                "web/app/forgot-password/page.tsx",
+                "web/app/signup/page.tsx",
+                "web/i18n/en.ts",
+            ],
+        },
+        flows={
+            "auth": ["sso-flow"],
+            "i18n": ["sign-in-flow", "forgot-password-flow", "signup-flow"],
+        },
+        descriptions={"auth": "auth", "i18n": "i18n"},
+    )
+    n = promote_virtual_clusters(result)
+    # No NEW feature created; backfill into existing 'auth'
+    assert n == 0
+    # auth grew
+    assert len(result.features["auth"]) == 1 + 3  # 1 original + 3 promoted
+    # auth flows grew
+    assert "sign-in-flow" in result.flows["auth"]
+    assert "forgot-password-flow" in result.flows["auth"]
+    # i18n shed its auth flows + paths
+    assert "sign-in-flow" not in result.flows["i18n"]
+    assert "web/app/signin/page.tsx" not in result.features["i18n"]
+    # i18n keeps its translation file
+    assert "web/i18n/en.ts" in result.features["i18n"]
+
+
+def test_no_backfill_when_existing_feature_is_already_large():
+    """If auth already has ≥ MIN_DOMAIN_PATHS, skip backfill."""
+    result = DeepScanResult(
+        features={
+            # Already well-covered
+            "auth": [f"server/auth/{i}.ts" for i in range(20)],
+            "i18n": [
+                "web/app/signin/page.tsx",
+                "web/app/signup/page.tsx",
+                "web/i18n/en.ts",
+            ],
+        },
+        flows={
+            "auth": ["existing-flow"],
+            "i18n": ["sign-in-flow", "signup-flow", "oauth-flow"],
+        },
+        descriptions={"auth": "", "i18n": ""},
+    )
+    promos = plan_promotions(result)
+    # Existing auth has 20 paths > MIN_DOMAIN_PATHS (15) → skip
+    assert all(p.domain != "auth" for p in promos)
+
+
+def test_no_backfill_when_too_few_stranded_flows():
+    """If only 2 stranded flows match domain, skip even with tiny auth."""
+    result = DeepScanResult(
+        features={
+            "auth": ["packages/auth-utils/sso.ts"],
+            "i18n": ["web/app/signin/page.tsx", "web/i18n/en.ts"],
+        },
+        flows={
+            "auth": ["sso-flow"],
+            "i18n": ["sign-in-flow", "signup-flow"],  # only 2
+        },
+        descriptions={"auth": "", "i18n": ""},
+    )
+    promos = plan_promotions(result)
+    assert all(p.domain != "auth" for p in promos)
+
+
+def test_backfill_via_hint_match_account_settings():
+    """Existing 'Account Settings' feature counts as the auth domain
+    via _DOMAIN_FEATURE_NAME_HINTS — backfill works through the hint."""
+    result = DeepScanResult(
+        features={
+            "App Navigation & Account Settings": [
+                "web/app/account/profile.tsx",
+                "web/app/account/avatar.tsx",
+            ],
+            "i18n": [
+                "web/app/signin/page.tsx",
+                "web/app/forgot-password/page.tsx",
+                "web/app/oauth/callback.tsx",
+                "web/i18n/en.ts",
+            ],
+        },
+        flows={
+            "App Navigation & Account Settings": ["change-name"],
+            "i18n": [
+                "sign-in-flow",
+                "forgot-password-flow",
+                "oauth-authorization-flow",
+            ],
+        },
+        descriptions={"App Navigation & Account Settings": "", "i18n": ""},
+    )
+    promos = plan_promotions(result)
+    auth_promos = [p for p in promos if p.domain == "auth"]
+    assert len(auth_promos) == 1
+    assert auth_promos[0].target_feature == "App Navigation & Account Settings"
