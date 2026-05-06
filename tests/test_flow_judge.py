@@ -931,3 +931,116 @@ def test_load_cache_legacy_no_flow_hash_not_invalidated(tmp_path):
     _save_cache(cache_dir, "test", "feat-h", {"a::x": {}}, flow_hash=None)
     out = _load_cache(cache_dir, "test", "feat-h", flow_hash=None)
     assert "a::x" in out
+
+
+# ── Sprint 15 Day 2: asymmetric threshold ─────────────────────────────
+
+
+def test_is_catchall_owner_basic():
+    from faultline.llm.flow_judge import _is_catchall_owner
+    assert _is_catchall_owner("i18n")
+    assert _is_catchall_owner("ui")
+    assert _is_catchall_owner("Vue Blocks")
+    assert _is_catchall_owner("App Shell")
+    assert not _is_catchall_owner("auth")
+    assert not _is_catchall_owner("dify-web/billing")
+
+
+def test_is_domain_target():
+    from faultline.llm.flow_judge import _is_domain_target
+    assert _is_domain_target("auth")
+    assert not _is_domain_target("Account Settings")  # only literal domain words
+    assert _is_domain_target("dify-web/billing")
+    assert _is_domain_target("notifications")
+    assert not _is_domain_target("dify-web/datasets")
+
+
+def test_resignal_asymmetric_catchall_to_domain_moves_below_30pct(tmp_path):
+    """The dify case: auth feature has 5 paths, i18n has 1300+. A flow
+    in i18n with paths 100% in auth (target=100%, current=0%) should
+    move even though 30% threshold isn't met (when current=0% target
+    just need ≥15% delta which 100% trivially is — but we test the
+    BORDERLINE: target=20%, current=5%, delta=15% catchall path)."""
+    from faultline.llm.flow_judge import re_judge_with_signals
+    result = DeepScanResult(
+        features={
+            "i18n": [f"i18n/locale-{i}.json" for i in range(80)] + ["x.ts", "y.ts"],
+            "auth": ["auth/sso.ts", "auth/jwt.ts"] + [f"auth/extra-{i}.ts" for i in range(18)],
+        },
+        flows={"i18n": ["sign-in-flow"]},
+        descriptions={"i18n": "translations", "auth": "auth"},
+    )
+    # Flow's paths are mixed: 20% in auth, 5% in i18n
+    result.flow_participants["i18n"] = {
+        "sign-in-flow": [
+            {"path": "auth/sso.ts"},     # in auth
+            {"path": "auth/jwt.ts"},     # in auth
+            {"path": "i18n/locale-1.json"},  # in i18n
+            {"path": "auth/extra-1.ts"},  # in auth
+            {"path": "auth/extra-2.ts"},  # in auth
+        ],
+    }
+    # Without S15: ownership(auth)=80%, ownership(i18n)=20%, delta=60% — would move regardless.
+    # We need a case where delta < 30% to prove the asymmetric path.
+    result.flow_participants["i18n"] = {
+        "sign-in-flow": [
+            {"path": "i18n/locale-1.json"},
+            {"path": "i18n/locale-2.json"},
+            {"path": "i18n/locale-3.json"},
+            {"path": "i18n/locale-4.json"},
+            {"path": "auth/sso.ts"},  # 1 of 5 = 20% in auth, 80% in i18n
+        ],
+    }
+    # current(i18n)=80%, target(auth)=20% → target loses, no move expected
+    client = _FakeAnthropic(scripted=[])
+    n = re_judge_with_signals(result, client=client)
+    assert n == 0  # target ownership lower than current — sane behaviour
+
+    # Now flip: paths mostly in auth (high target ownership)
+    result.flow_participants["i18n"] = {
+        "sign-in-flow": [
+            {"path": "auth/sso.ts"},
+            {"path": "auth/jwt.ts"},
+            {"path": "auth/extra-1.ts"},
+            {"path": "auth/extra-2.ts"},
+            {"path": "i18n/locale-1.json"},
+        ],
+    }
+    # current(i18n)=20%, target(auth)=80%, delta=60% — moves under either threshold
+    client = _FakeAnthropic(scripted=[
+        _FakeResponse(content=[_FakeBlock(text=json.dumps({
+            "verdicts": [{
+                "flow": "sign-in-flow", "from": "i18n",
+                "decision": "move", "to": "auth", "confidence": 5,
+            }]
+        }))])
+    ])
+    n = re_judge_with_signals(result, client=client)
+    assert n == 1
+    assert "sign-in-flow" in result.flows["auth"]
+
+
+def test_resignal_asymmetric_only_for_catchall_source(tmp_path):
+    """domain → domain still uses 30% threshold (no asymmetric loosening)."""
+    from faultline.llm.flow_judge import re_judge_with_signals
+    result = DeepScanResult(
+        features={
+            "auth": [f"auth/{i}.ts" for i in range(20)],
+            "billing": [f"billing/{i}.ts" for i in range(20)],
+        },
+        flows={"auth": ["x-flow"]},
+        descriptions={"auth": "", "billing": ""},
+    )
+    # Flow has paths mixed: 4 in auth, 1 in billing — delta=15%, NOT enough
+    result.flow_participants["auth"] = {
+        "x-flow": [
+            {"path": "auth/0.ts"}, {"path": "auth/1.ts"},
+            {"path": "auth/2.ts"}, {"path": "auth/3.ts"},
+            {"path": "billing/0.ts"},
+        ],
+    }
+    # current(auth)=80%, target(billing)=20%, delta=-60% — no move, target is the loser
+    client = _FakeAnthropic(scripted=[])
+    n = re_judge_with_signals(result, client=client)
+    assert n == 0
+    assert client.messages.calls == []

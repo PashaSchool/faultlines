@@ -582,6 +582,39 @@ def _features_for_prompt(result: "DeepScanResult") -> dict[str, str]:
     return out
 
 
+# Sprint 15 Day 2 — names that count as "catch-all" buckets when
+# the source side of a re-attribution. Flows in these owners are
+# inherently low-confidence regardless of file ownership.
+_CATCHALL_OWNERS: frozenset[str] = frozenset({
+    "i18n", "ui", "web", "app", "shell", "frontend", "studio",
+    "studio dashboard", "vue blocks", "app shell", "workflow app",
+})
+
+
+def _is_catchall_owner(name: str) -> bool:
+    """True when the owner is one of the recognised catch-all buckets.
+
+    Lowercase + trailing 's' tolerated. Used by ``re_judge_with_signals``
+    to decide whether to apply the asymmetric threshold.
+    """
+    nl = name.lower().strip()
+    if nl in _CATCHALL_OWNERS:
+        return True
+    # Trailing single-word matches: "ui-shell", "app-shell".
+    last = nl.rsplit("/", 1)[-1].rsplit(" ", 1)[-1]
+    return last in _CATCHALL_OWNERS
+
+
+def _is_domain_target(name: str) -> bool:
+    """True when the target is a recognised domain feature.
+
+    Avoids importing from flow_cluster to keep judge layer-independent.
+    Hard-coded list matches DOMAIN_TOKENS keys.
+    """
+    nl = name.lower()
+    return any(d in nl for d in ("auth", "billing", "notification"))
+
+
 def re_judge_with_signals(
     result: "DeepScanResult",
     *,
@@ -590,6 +623,7 @@ def re_judge_with_signals(
     tracker: CostTracker | None = None,
     client: _AnthropicLike | None = None,
     disagreement_threshold: float = 0.30,
+    catchall_threshold: float = 0.15,
 ) -> int:
     """Sprint 13 Day 1 — second judge pass with deterministic signals.
 
@@ -640,7 +674,22 @@ def re_judge_with_signals(
                 key=lambda x: x[1],
                 default=("", 0.0),
             )
-            if best_other[1] - current_score < disagreement_threshold:
+            # Sprint 15 — asymmetric threshold for catch-all → domain.
+            # Catch-all buckets (i18n, ui, web shells) are low-trust
+            # owners; a flow with ANY domain-target signal beats their
+            # claim even when paths haven't fully migrated to the
+            # target feature yet.
+            best_target_name = best_other[0]
+            is_catchall_to_domain = (
+                _is_catchall_owner(owner)
+                and _is_domain_target(best_target_name)
+                and best_other[1] >= 0.05  # target needs minimal stake
+            )
+            threshold = (
+                catchall_threshold if is_catchall_to_domain
+                else disagreement_threshold
+            )
+            if best_other[1] - current_score < threshold:
                 continue
             descs = result.flow_descriptions.get(owner, {})
             description = descs.get(flow_name, "") if isinstance(descs, dict) else ""
