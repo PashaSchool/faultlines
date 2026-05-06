@@ -55,8 +55,11 @@ def _feat(name: str, paths: list[str], commits: int) -> Feature:
 
 
 class TestCollapseSameName:
-    def test_three_credentials_features_collapse_to_one(self):
-        """n8n's Credentials × 3 case: same display_name across 3 packages."""
+    def test_three_credentials_features_disjoint_renamed(self):
+        """Sprint 14 — n8n's Credentials × 3 across packages. Paths are
+        path-disjoint (cli / core / nodes-base), so we PREFIX-RENAME
+        each to keep them separate. Different packages, different
+        business concerns. The old behaviour (always merge) is wrong."""
         result = _ds({
             "Credentials": ["packages/@n8n/cli/credentials.ts"],
             "credentials": [
@@ -73,19 +76,12 @@ class TestCollapseSameName:
 
         merged = _collapse_same_name_features(result)
 
-        # Three Credentials variants collapse to ONE entry. Workflow untouched.
-        cred_keys = [n for n in merged.features if n.lower() == "credentials"]
-        assert len(cred_keys) == 1, f"expected 1 Credentials, got {cred_keys}"
-
-        # All 6 original credential paths preserved on the canonical entry.
-        canonical = merged.features[cred_keys[0]]
-        assert len(canonical) == 6
-        assert "packages/nodes-base/Credentials.node.ts" in canonical
-        assert "packages/@n8n/cli/credentials.ts" in canonical
-
-        # Canonical name = the variant with the most paths (3 files).
-        assert cred_keys[0] == "CREDENTIALS"
-
+        # Three Credentials variants stay distinct after path-aware rename.
+        cred_keys = [
+            n for n in merged.features
+            if n.lower().endswith("credentials") or "credentials" in n.lower()
+        ]
+        assert len(cred_keys) == 3, f"expected 3 distinct Credentials, got {cred_keys}"
         # Workflow feature unchanged.
         assert len(merged.features["Workflow"]) == 2
 
@@ -113,11 +109,13 @@ class TestCollapseSameName:
             "pkg/a/errors.ts", "pkg/b/errors.ts", "pkg/c/errors.ts",
         ]))
 
-    def test_descriptions_carry_over_from_canonical(self):
+    def test_descriptions_carry_over_when_paths_overlap(self):
+        """Sprint 14 — descriptions follow the canonical only when
+        paths overlap (true merge). With overlap, behaviour unchanged."""
         result = _ds(
             {
-                "Admin": ["a.ts"],
-                "ADMIN": ["b.ts", "c.ts", "d.ts"],
+                "Admin": ["shared.ts"],
+                "ADMIN": ["b.ts", "c.ts", "shared.ts"],  # overlap on shared.ts
             },
             descriptions={"Admin": "small one", "ADMIN": "big one"},
         )
@@ -138,13 +136,11 @@ class TestCollapseSameName:
         merged = _collapse_same_name_features(result)
         assert "shared-infra" in merged.features
 
-    def test_collapses_slash_prefixed_subdecompose_children(self):
-        """Sub_decompose creates slash-prefixed children like
-        ``parent/credentials``; without last-segment normalization
-        they don't collapse with sibling ``credentials``. n8n's
-        May 5 v2 leaked 3 duplicate pairs through Stage 2.5 for
-        exactly this reason. The fix is one line.
-        """
+    def test_slash_prefixed_subdecompose_children_disjoint_renamed(self):
+        """Sprint 14 — slash-prefixed sub_decompose children with
+        path-disjoint locations (nodes-base vs frontend) get
+        prefix-renamed instead of merged. Different deployable
+        targets shouldn't be flattened together."""
         result = _ds({
             "credentials": [
                 "packages/nodes-base/credentials/AwsAssumeRole.credentials.ts",
@@ -156,23 +152,19 @@ class TestCollapseSameName:
             "Workflow Editor": ["apps/web/workflow-editor/canvas.tsx"],
         })
         merged = _collapse_same_name_features(result)
-        # Both Credentials variants collapsed to one
-        cred_keys = [n for n in merged.features if n.lower().rsplit("/", 1)[-1] == "credentials"]
-        assert len(cred_keys) == 1
-        # All 3 credential paths preserved on the canonical entry
-        assert len(merged.features[cred_keys[0]]) == 3
+        # Both Credentials variants stay distinct after rename
+        cred_keys = [
+            n for n in merged.features if "credentials" in n.lower()
+        ]
+        assert len(cred_keys) == 2
         # Workflow Editor untouched
         assert "Workflow Editor" in merged.features
 
-    def test_post_pipeline_collapses_late_introduced_duplicates(self):
-        """Regression: Sprint 9 May 5 scans produced n8n Credentials × 2
-        and plane Issues × 2 because sub_decompose / smart_aggregators
-        introduced duplicate names AFTER Stage 1.45 ran. The Stage 2.5
-        final-pass collapse catches them.
-        """
-        # Plane-style: two distinct apps that ended up with the same
-        # display name. Path union puts them under one feature on the
-        # dashboard rather than showing two confusingly-identical ones.
+    def test_post_pipeline_disjoint_duplicates_get_renamed(self):
+        """Sprint 14 — plane's Issues lives in two different deployable
+        apps (web vs space). Path-disjoint, so the path-aware
+        collapse renames instead of merging. This is a known plane
+        scatter case the user explicitly flagged in S14 plan."""
         result = _ds({
             "Issues": [
                 "apps/web/components/issues/header.tsx",
@@ -184,11 +176,9 @@ class TestCollapseSameName:
             "Workflow Editor": ["apps/web/workflow-editor/canvas.tsx"],
         })
         merged = _collapse_same_name_features(result)
-        # Both Issues collapsed to one
-        issues_keys = [n for n in merged.features if n.lower() == "issues"]
-        assert len(issues_keys) == 1
-        # All three issue-related paths preserved
-        assert len(merged.features[issues_keys[0]]) == 3
+        # Both Issues stay distinct after rename
+        issues_keys = [n for n in merged.features if "issues" in n.lower()]
+        assert len(issues_keys) == 2
         # Workflow Editor untouched
         assert "Workflow Editor" in merged.features
 

@@ -642,9 +642,15 @@ class TestPackageModePrompt:
         assert "12-25" in prompt
         assert "single package within a monorepo" not in prompt
 
-    def test_package_prompt_targets_1_8_features(self) -> None:
-        """Package mode swaps in the 1-8 target and HARD CAP language."""
-        prompt = _build_system_prompt(package_mode=True, package_name="auth")
+    def test_package_prompt_targets_dynamic_cap(self) -> None:
+        """Package mode swaps in the 1-{cap} target and HARD CAP language.
+
+        Sprint 14 — cap is now derived from package_size. A 64-file
+        package gets cap=8 (matching the original constant).
+        """
+        prompt = _build_system_prompt(
+            package_mode=True, package_name="auth", package_size=64,
+        )
         assert "1-8 features" in prompt
         assert "HARD CAP" in prompt
         assert "`auth`" in prompt
@@ -653,7 +659,7 @@ class TestPackageModePrompt:
 
     def test_package_prompt_handles_missing_name(self) -> None:
         """Defensive: package_mode without a name should still render."""
-        prompt = _build_system_prompt(package_mode=True)
+        prompt = _build_system_prompt(package_mode=True, package_size=64)
         assert "1-8 features" in prompt
         assert "unknown" in prompt
 
@@ -689,6 +695,7 @@ class TestPackageModePrompt:
         prompt = _build_system_prompt(
             package_mode=True,
             package_name="auth",
+            package_size=64,
             is_library=True,
         )
         # Package-mode target should be active
@@ -736,12 +743,15 @@ class TestPackageModePrompt:
             _MINIMAL_OPS_JSON, 100, 50,
         )
 
+        # Use 64-file package so dynamic cap renders to 8 (legacy match).
+        files = [f"src/auth/f{i}.ts" for i in range(64)]
         deep_scan(
-            files=["src/auth/login.ts", "src/auth/signup.ts"],
-            candidates={"auth": ["src/auth/login.ts", "src/auth/signup.ts"]},
+            files=files,
+            candidates={"auth": files},
             api_key="sk-ant-test",
             package_mode=True,
             package_name="auth",
+            package_size=64,
         )
 
         sent_system = mock_client.messages.create.call_args.kwargs["system"]
