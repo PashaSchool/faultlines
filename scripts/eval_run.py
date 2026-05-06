@@ -21,6 +21,7 @@ import json
 import sys
 from pathlib import Path
 
+from tests.eval.failure_modes import classify_all, summarise
 from tests.eval.judge import judge_run
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +120,25 @@ def main() -> int:
         ) if expected_flows else None
 
         baseline_repo = baseline.get("repos", {}).get(repo, {})
+        # Sprint 16 Day 4 — classify each miss into a failure mode so
+        # the PR comment shows a breakdown, not just a percentage.
+        miss_pairs = [
+            (m.expected, m.detected)
+            for m in feat_result.matches if not m.is_hit
+        ]
+        sample_paths: list[str] = []
+        try:
+            fm_data = json.loads(fm_path.read_text())
+            for f in fm_data.get("features", [])[:3]:
+                sample_paths.extend(f.get("paths", [])[:5])
+        except (OSError, json.JSONDecodeError):
+            pass
+        classified = classify_all(
+            miss_pairs,
+            detected_features=detected_features,
+            sample_paths=sample_paths,
+        ) if miss_pairs else []
+
         out["repos"][repo] = {
             "status": "scored",
             "scan_path": str(fm_path.relative_to(ROOT) if str(fm_path).startswith(str(ROOT)) else fm_path),
@@ -137,9 +157,18 @@ def main() -> int:
                 "f1": round(flow_result.f1, 3) if flow_result else None,
             } if flow_result else None,
             "misses": [
-                {"expected": m.expected, "detected": m.detected}
-                for m in feat_result.matches if not m.is_hit
+                {
+                    "expected": cm.expected,
+                    "detected": cm.detected,
+                    "mode": cm.mode.name,
+                    "reasoning": cm.reasoning,
+                }
+                for cm in classified
             ],
+            "failure_modes": {
+                mode.name: count
+                for mode, count in summarise(classified).items()
+            } if classified else {},
             "extras": feat_result.extras,
         }
 

@@ -43,12 +43,30 @@ def _miss_list(repo: str, data: dict, max_n: int = 5) -> str:
     for m in misses[:max_n]:
         exp = m.get("expected") or "?"
         det = m.get("detected")
+        mode = m.get("mode") or ""
+        suffix = f"  _[{mode}]_" if mode and mode != "UNCATEGORISED" else ""
         if det:
-            lines.append(f"  - `{exp}` → mapped to `{det}` (partial)")
+            lines.append(f"  - `{exp}` → mapped to `{det}`{suffix}")
         else:
-            lines.append(f"  - `{exp}` → not detected")
+            lines.append(f"  - `{exp}` → not detected{suffix}")
     if len(misses) > max_n:
         lines.append(f"  - … {len(misses) - max_n} more")
+    return "\n".join(lines)
+
+
+def _failure_breakdown(repos: dict) -> str:
+    """Aggregate failure mode counts across repos."""
+    from collections import Counter
+    total = Counter()
+    for data in repos.values():
+        for mode, count in (data.get("failure_modes") or {}).items():
+            total[mode] += count
+    if not total:
+        return ""
+    lines = ["\n**Failure modes** (across all repos):"]
+    for mode, count in total.most_common():
+        nice = mode.replace("_", " ").title()
+        lines.append(f"  - `{count}×` {nice}")
     return "\n".join(lines)
 
 
@@ -74,12 +92,16 @@ def render(results: dict) -> str:
     for repo in sorted(repos):
         parts.append(_row(repo, repos[repo]))
 
+    breakdown = _failure_breakdown(repos)
+    if breakdown:
+        parts.append(breakdown)
+
     miss_blocks = [
         _miss_list(repo, repos[repo]) for repo in sorted(repos)
     ]
     miss_blocks = [b for b in miss_blocks if b]
     if miss_blocks:
-        parts.append("\n<details><summary>Missing features (first 5 per repo)</summary>\n")
+        parts.append("\n<details><summary>Missing features (first 5 per repo, with mode tags)</summary>\n")
         parts.extend(miss_blocks)
         parts.append("\n</details>")
 
