@@ -79,6 +79,7 @@ def run(
     flow_judge: bool = True,  # Sprint 11: Haiku-judged flow re-attribution
     flow_cluster: bool = True,  # Sprint 12: virtual cluster promotion (Layer A)
     flow_symbols: bool = True,  # Sprint 12: per-flow symbol resolution (Layer B)
+    flow_sweep: bool = True,  # Sprint 12: entry-point sweep + cross-val (Layer C)
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -659,6 +660,36 @@ def run(
                 "participants from prior stages",
                 exc,
             )
+
+    # Stage 2.8 (Sprint 12 Day 6): Layer C — entry-point sweep + cross-
+    # validation. Every route handler / exported handler-pattern symbol
+    # in the repo is harvested. Anything not already covered by a flow
+    # is sent to Haiku for clustering + naming, becoming a new flow
+    # under the most plausible feature. A second cross-val Haiku pass
+    # asks each feature "which neighbour flows ALSO touch you?" and
+    # records secondary claims into ``flow_secondaries`` (the same
+    # channel the primary judge populates via ``also_belongs_to``).
+    #
+    # Skipped on libraries (no flows). Wraps in try/except so any
+    # failure logs and falls through.
+    if flow_sweep and not is_library and signatures:
+        try:
+            from faultline.llm.flow_sweep import run_layer_c
+            counts = run_layer_c(
+                result,
+                signatures=signatures,
+                api_key=api_key,
+                tracker=tracker,
+            )
+            logger.info(
+                "flow_sweep: harvested=%d unattached=%d promoted=%d cross_val=%d",
+                counts.get("harvested", 0),
+                counts.get("unattached", 0),
+                counts.get("promoted", 0),
+                counts.get("cross_val_claims", 0),
+            )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("flow_sweep: stage failed (%s) — skipping", exc)
 
     # Stage 3: Orphan validation. Every SOURCE file must land in exactly
     # one feature. Anything missing is a bug we want to surface, not a
