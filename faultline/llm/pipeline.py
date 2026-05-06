@@ -146,6 +146,24 @@ def run(
     partition = partition_files(analysis_files)
     logger.info("pipeline: bucketizer partition: %s", bucket_summary(partition))
 
+    # Sprint 14 Day 1 — sanity-check pass: heavily-imported DOCS/INFRA
+    # files (schema/, config/, types/ etc.) get promoted back to
+    # SOURCE so feature detection can see them. Driven by import-graph
+    # fan-in measured against the SOURCE bucket.
+    if signatures:
+        try:
+            from faultline.analyzer.bucket_promote import (
+                promote_imported_docs_infra,
+            )
+            docs_p, infra_p = promote_imported_docs_infra(partition, signatures)
+            if docs_p or infra_p:
+                logger.info(
+                    "pipeline: promoted %d docs + %d infra → SOURCE",
+                    docs_p, infra_p,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pipeline: bucket_promote failed (%s) — skipping", exc)
+
     source_files = partition[Bucket.SOURCE]
     doc_files = partition[Bucket.DOCUMENTATION]
     infra_files = partition[Bucket.INFRASTRUCTURE]
