@@ -1,0 +1,890 @@
+_schema: sprint12-flow-truth-v1
+_legend:
+  expected_feature: exact feature name from menu, or '<NEW>:<domain>' if a synthetic
+    feature is needed, or '<DROP>' to mark bogus flow
+flows:
+- name: activate-invited-member
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: manage-webapp-session-flow
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: oauth-authorization
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: oauth-post-login-redirect-flow
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: plugin-oauth-setup-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: sign-in-to-console
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: sign-in-to-webapp
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: verify-email-login-code
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: verify-webapp-email-login-code
+  current_owner: i18n
+  expected_feature: auth
+  domain: auth
+  note: domain=auth; menu has auth
+- name: billing-context-mock-flow
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: billing-period-utilities-flow
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: billing-quota-management-flow
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: billing-upgrade-links-flow
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: manage-billing-flow
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: open-billing-portal
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: plugin-subscription-modal-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: process-payment-flow
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: upgrade-subscription-plan
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: billing
+  note: domain=billing; menu has dify-web/billing
+- name: access-shared-app-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: add-app-from-template
+  current_owner: dify-web/explore
+  expected_feature: dify-web/explore
+  domain: null
+  note: no-domain-signal; default keep
+- name: add-documents-via-pipeline
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: app-analytics-chart-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: app-config-modal-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: app-configuration-handlers
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: app-log-formatting-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: app-overview-display-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: authorize-plugin-credentials
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: browse-and-configure-tools
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: browse-tools-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: callback-handler-infrastructure-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-account-settings
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-data-source-connections
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-dataset-settings
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-datasource-providers-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-model-defaults-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-model-provider-credentials
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: configure-tool-providers-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: connect-external-knowledge-base
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: conversation-logging-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: create-dataset
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: create-dataset-from-pipeline
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: customize-web-app-brand
+  current_owner: dify-web/index.stories
+  expected_feature: dify-web/index.stories
+  domain: null
+  note: no-domain-signal; default keep
+- name: dataset-crud-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: dataset-pipeline-store-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: dataset-retrieval-config-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: dataset-retrieval-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: datasource-provider-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: debug-workflow-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: discover-marketplace-plugins-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: dismiss-resource-limit-warning
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: null
+  note: no-domain-signal; default keep
+- name: document-embedding-process-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: document-ingestion-store-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: edit-workflow-canvas
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: explore-apps-flow
+  current_owner: dify-web/explore
+  expected_feature: dify-web/explore
+  domain: null
+  note: no-domain-signal; default keep
+- name: external-data-tool-config
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: fetch-dataset-processing-config-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: file-upload-handling-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: generate-icon-collections
+  current_owner: iconify-collections
+  expected_feature: iconify-collections
+  domain: null
+  note: no-domain-signal; default keep
+- name: http-request-utilities-flow
+  current_owner: Node.js SDK
+  expected_feature: Node.js SDK
+  domain: null
+  note: no-domain-signal; default keep
+- name: i18n-initialization-flow
+  current_owner: dify-web/i18n
+  expected_feature: dify-web/i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: i18n-test-setup-flow
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: image-upload-management
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: import-workflow-dsl
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: ingest-dataset-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: ingest-dataset-sources-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: install-plugin-from-github
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: install-plugin-from-local-package
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: install-plugin-from-marketplace
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: interact-shared-app-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: invite-workspace-members
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: iteration-node-layout-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: jieba-keyword-extraction-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: knowledge-base-validation-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: knowledge-retrieval-config-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: knowledge-retrieval-filter-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: list-operator-config-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: llm-json-schema-editor-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: llm-node-validation-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: loop-node-config-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: loop-node-configuration-flow
+  current_owner: workflow
+  expected_feature: workflow
+  domain: null
+  note: no-domain-signal; default keep
+- name: loop-node-layout-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-annotations-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-app-info-and-operations
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-app-instances-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-app-releases-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-app-tracing-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-apps-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-custom-tools-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-data-sources-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-dataset-api-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-dataset-documents
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-dataset-documents-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-datasets-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-extensions-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-external-knowledge-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-knowledge-base-datasets
+  current_owner: Node.js SDK
+  expected_feature: Node.js SDK
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-mcp-servers-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-notion-connection-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-plugin-providers-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-tags-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-tool-credentials-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-user-profile-flow
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-workflow-comments-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: manage-workflow-tools-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: marketplace-discovery-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: marketplace-template-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: navigate-with-goto-anything
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: note-editor-management-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: notion-page-selection
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: online-drive-file-utils-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-discovery-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-install-state-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-installation-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-marketplace-discovery-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-metadata-utilities-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-trigger-management-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: plugin-update-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: publish-workflow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: query-workspace-models
+  current_owner: Node.js SDK
+  expected_feature: Node.js SDK
+  domain: null
+  note: no-domain-signal; default keep
+- name: rag-pipeline-input-schema-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: rag-pipeline-state-flow
+  current_owner: dify-web/datasets
+  expected_feature: dify-web/datasets
+  domain: null
+  note: no-domain-signal; default keep
+- name: reasoning-config-form-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: restore-workflow-version
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: run-batch-migration-to-fix-unchecked-indexed-access
+  current_owner: migrate-no-unchecked-indexed-access
+  expected_feature: migrate-no-unchecked-indexed-access
+  domain: null
+  note: no-domain-signal; default keep
+- name: run-shared-workflow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: run-workflow
+  current_owner: Node.js SDK
+  expected_feature: Node.js SDK
+  domain: null
+  note: no-domain-signal; default keep
+- name: run-workflow-test
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: schedule-trigger-execution-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: schedule-trigger-setup-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: send-chat-message
+  current_owner: Node.js SDK
+  expected_feature: Node.js SDK
+  domain: null
+  note: no-domain-signal; default keep
+- name: send-completion-message
+  current_owner: Node.js SDK
+  expected_feature: Node.js SDK
+  domain: null
+  note: no-domain-signal; default keep
+- name: shared-app-sso-flow
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: system-initialization-flow
+  current_owner: auth
+  expected_feature: auth
+  domain: null
+  note: no-domain-signal; default keep
+- name: test-app-lifecycle-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: tool-configuration-flow
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: try-app-flow
+  current_owner: dify-web/explore
+  expected_feature: dify-web/explore
+  domain: null
+  note: no-domain-signal; default keep
+- name: try-explore-app
+  current_owner: dify-web/explore
+  expected_feature: dify-web/explore
+  domain: null
+  note: no-domain-signal; default keep
+- name: update-or-uninstall-plugin
+  current_owner: dify-web/plugins/plugin-detail-and-configuration
+  expected_feature: dify-web/plugins/plugin-detail-and-configuration
+  domain: null
+  note: no-domain-signal; default keep
+- name: user-profile-update
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: user-sso-flow
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: variable-assigner-configuration-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-app-instance-overview-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-current-plan
+  current_owner: dify-web/billing
+  expected_feature: dify-web/billing
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-plugin-detail-and-configure
+  current_owner: i18n
+  expected_feature: i18n
+  domain: null
+  note: no-domain-signal; default keep
+- name: view-workflow-run-history
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: webhook-trigger-config-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: webhook-trigger-configuration-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-config-update-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-datasource-validation
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-draft-sync-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-edge-interactions
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-edge-styling
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-execution-state-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-form-input-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-graph-analysis-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-graph-layout
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-inspect-vars-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-inspection-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-keyboard-shortcuts
+  current_owner: workflow
+  expected_feature: workflow
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-layout-organization
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-node-config-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-node-execution-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-node-layout-flow
+  current_owner: workflow
+  expected_feature: workflow
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-node-rendering
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-node-run-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-panel-data-source-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-panel-layout-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-run-event-testing-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-state-management
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-state-management-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-store-initialization-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-stream-handling-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-test-fixtures
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-tool-output-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-validation-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-variable-binding-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
+- name: workflow-variable-management-flow
+  current_owner: dify-web/workflow-app
+  expected_feature: dify-web/workflow-app
+  domain: null
+  note: no-domain-signal; default keep
