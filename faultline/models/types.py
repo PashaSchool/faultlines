@@ -62,6 +62,14 @@ class Flow(BaseModel):
     hotspot_files: list[str] = []            # source files with >40% bug_fix_ratio (≥3 commits)
     coverage_pct: float | None = None        # avg line coverage % across source files; None if unavailable
     symbol_attributions: list["SymbolAttribution"] = []  # symbols (functions/classes) that belong to this flow — populated when --symbols is enabled
+    # Sprint 12 Day 3.5 — multi-feature ownership. A flow can
+    # legitimately participate in more than one feature ("Create
+    # Organization" touches Auth + Billing + Notifications). The
+    # PRIMARY owner is the parent ``Feature.flows`` it appears under;
+    # ``secondary_features`` are additional feature names the flow
+    # also belongs to. Dashboards render this as a "shared with: X, Y"
+    # badge. Empty list = single-feature flow (most common case).
+    secondary_features: list[str] = []
 
 
 class SymbolRange(BaseModel):

@@ -1072,6 +1072,9 @@ def analyze(
                 flow_participants=getattr(
                     _new_pipeline_result, "flow_participants", {},
                 ),
+                flow_secondaries=getattr(
+                    _new_pipeline_result, "flow_secondaries", {},
+                ),
             )
 
         # 6a.55: Commit-aware noise drop (Fix #2 from Fixable-accuracy
@@ -1472,6 +1475,7 @@ def _inject_new_pipeline_flows(
     flow_descriptions: dict[str, dict[str, str]],
     commits,
     flow_participants: dict | None = None,
+    flow_secondaries: dict[str, list[str]] | None = None,
 ) -> None:
     """Attach Sprint 4 (tool-augmented) flow names + descriptions to the
     feature_map.
@@ -1500,6 +1504,7 @@ def _inject_new_pipeline_flows(
     from faultline.models.types import Flow, FlowParticipant
 
     fp_map = flow_participants or {}
+    secondaries_map = flow_secondaries or {}
     dropped_hallucinated = 0
 
     for feat in feature_map.features:
@@ -1575,6 +1580,14 @@ def _inject_new_pipeline_flows(
                 health = feat.health_score
                 flow_paths = list(feat.paths)
 
+            # Sprint 12 Day 3.5 — multi-feature ownership pulled from
+            # the side channel populated by flow_judge. Filter against
+            # the feature menu to drop any hallucinated names that
+            # slipped past the judge's own validation.
+            secondaries = [
+                f for f in secondaries_map.get(name, [])
+                if f != feat.name
+            ]
             new_flows.append(Flow(
                 name=name,
                 description=clean_desc,
@@ -1588,6 +1601,7 @@ def _inject_new_pipeline_flows(
                 last_modified=last_mod,
                 health_score=health,
                 participants=participants,
+                secondary_features=secondaries,
             ))
         feat.flows = new_flows
 

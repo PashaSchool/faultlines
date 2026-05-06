@@ -29,7 +29,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -78,6 +78,12 @@ class FlowVerdict:
     destination: str | None
     confidence: int  # 1..5
     reasoning: str = ""
+    # Sprint 12 Day 3.5 — multi-feature ownership. Names of OTHER
+    # features the flow also legitimately belongs to (besides
+    # ``destination`` / ``current_owner``). Empty list = single-owner
+    # flow (most common). Applied as ``result.flow_secondaries`` so
+    # downstream renders can show "shared with: X, Y" badges.
+    also_belongs_to: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -98,31 +104,50 @@ where UI components for one domain are split across multiple
 features.
 
 For each flow you receive, pick the feature whose business domain
-best matches the flow's name and description. Conservative bias:
-when no feature clearly matches, KEEP the current owner.
+best matches the flow's name and description.
 
-EXAMPLES OF CORRECT MOVES
+DECISION RULES (apply in order)
 
-  flow="Authenticate with Password", current="Vue Blocks",
-  features include "Auth" → move to Auth (decision=move, conf=5)
+  1. CATCH-ALL OWNERS MUST RELEASE. If current_owner is a generic
+     bucket — translations ("I18N", "Locales"), framework UI shells
+     ("UI", "Web", "App Shell", "Studio Dashboard", "Vue Blocks"),
+     mega-buckets like "Workflow App" or "Frontend" — and ANY
+     domain-specific feature in the menu plausibly fits the flow,
+     MOVE (conf=5). These buckets accumulate flows by accident of
+     file ownership; they are never the right semantic owner.
 
-  flow="Manage Auth Configuration", current="Studio",
-  features include "Auth" → move to Auth (conf=5)
+  2. DOMAIN MATCH WINS. If the flow name carries a clear domain
+     signal (auth/login/signup/password/oauth → Auth-named feature;
+     billing/invoice/subscription/pricing → Billing; dataset/
+     knowledge → Datasets; etc.) and the menu contains a feature
+     for that domain, MOVE (conf=5).
 
-  flow="Sign in via OAuth", current="Studio",
-  features include "Authentication" → move to Authentication
-  (conf=5; OAuth sign-in IS authentication even without shared word)
+  3. KEEP ONLY WHEN OWNER IS DOMAIN-SPECIFIC. If current_owner is
+     itself the domain-specific feature for this flow, KEEP (conf=5).
 
-EXAMPLES OF CORRECT KEEPS
+  4. AMBIGUOUS → KEEP. If two domain features both fit and current
+     owner sits between them, KEEP (conf=2).
 
-  flow="Open Studio Dashboard", current="Studio" → keep (conf=5)
+EXAMPLES
 
-  flow="Manage Subscription Settings", current="Studio",
-  features include "Billing" AND "Settings" → keep (conf=2;
-  ambiguous — could fit either, conservative default).
+  flow="Authenticate User", current="I18N",
+  menu has "Authentication & Access"
+    → MOVE to "Authentication & Access" (conf=5)
+    (rule 1: I18N is translations bucket; rule 2: auth signal)
 
-  flow="Update Configuration", current="Studio" → keep (conf=2;
-  no domain-specific signal in the name).
+  flow="Create Dataset From Pipeline", current="I18N",
+  menu has "Datasets"
+    → MOVE to "Datasets" (conf=5)
+
+  flow="Sign in via OAuth", current="Studio Dashboard",
+  menu has "Auth"
+    → MOVE to "Auth" (conf=5)
+
+  flow="Browse Plugin Marketplace", current="Plugin Detail & Configuration"
+    → KEEP (conf=5; rule 3, current owner IS the plugin feature)
+
+  flow="Update Configuration", current="Settings"
+    → KEEP (conf=4; no other plausible owner)
 
 CONFIDENCE
   5 — clear domain match, current owner clearly wrong
@@ -131,6 +156,20 @@ CONFIDENCE
   1-2 — low signal; always keep
 
 Only ``move`` verdicts with confidence ≥4 are applied downstream.
+
+MULTI-FEATURE OWNERSHIP (also_belongs_to)
+Some flows legitimately participate in MULTIPLE features. Examples:
+  - "Create Organization" touches Auth (user invited), Billing (plan
+    selection), and Notifications (welcome email).
+  - "Subscribe to Plan" touches Billing (Stripe call) AND Auth
+    (renew session token).
+  - "Send Magic Link" touches Auth AND Notifications.
+
+When a flow clearly spans 2-3 domains, return ``also_belongs_to``
+with the additional feature names. This is a side channel — it does
+not replace the primary owner. Cap at 3; only include features whose
+involvement is OBVIOUS (named in the flow, or the flow's described
+behaviour explicitly mentions them). When in doubt, leave empty.
 
 INPUT (JSON)
 {
@@ -154,9 +193,13 @@ OUTPUT (JSON only, no prose, no markdown fences)
      "decision": "move" | "keep",
      "to": "<dest_feature>" | null,
      "confidence": 1..5,
-     "reasoning": "<one short sentence>"}
+     "reasoning": "<one short sentence>",
+     "also_belongs_to": ["<other_feature>", ...]}
   ]
 }
+
+``also_belongs_to`` is an array of additional feature names; default
+to ``[]`` when the flow has a single clear owner.
 
 Cover EVERY flow in the input. Do not silently drop any.
 """
@@ -248,6 +291,19 @@ def _coerce_verdict(entry: dict) -> FlowVerdict | None:
 
     reasoning = (entry.get("reasoning") or "").strip()
 
+    raw_also = entry.get("also_belongs_to") or []
+    also_belongs_to: list[str] = []
+    if isinstance(raw_also, list):
+        for x in raw_also:
+            if isinstance(x, str) and x.strip():
+                v = x.strip()
+                # Drop anything pointing back at primary destination /
+                # current owner — multi-ownership only adds NEW
+                # features; primary stays in ``destination``.
+                if v != destination and v != current and v not in also_belongs_to:
+                    also_belongs_to.append(v)
+        also_belongs_to = also_belongs_to[:3]  # spec cap
+
     return FlowVerdict(
         flow_name=flow,
         current_owner=current,
@@ -255,6 +311,7 @@ def _coerce_verdict(entry: dict) -> FlowVerdict | None:
         destination=destination,
         confidence=confidence,
         reasoning=reasoning,
+        also_belongs_to=also_belongs_to,
     )
 
 
@@ -278,6 +335,19 @@ def _apply_verdicts(
     """
     moves = 0
     for v in verdicts:
+        # Sprint 12 Day 3.5 — record multi-feature ownership for any
+        # verdict (move OR keep) whose also_belongs_to is non-empty
+        # AND every named feature actually exists in the menu. Skipping
+        # unknown features prevents hallucinated targets from sneaking
+        # into the side channel.
+        if v.also_belongs_to:
+            valid = [f for f in v.also_belongs_to if f in result.features]
+            if valid:
+                result.flow_secondaries.setdefault(v.flow_name, [])
+                for f in valid:
+                    if f not in result.flow_secondaries[v.flow_name]:
+                        result.flow_secondaries[v.flow_name].append(f)
+
         if v.decision != "move":
             continue
         if v.confidence < confidence_floor:
@@ -406,6 +476,8 @@ def _verdict_from_dict(d: dict[str, Any]) -> FlowVerdict | None:
     """Reverse of _verdict_to_dict. None on malformed input so cache
     poisoning can't crash a scan."""
     try:
+        raw_also = d.get("also_belongs_to") or []
+        also = [x for x in raw_also if isinstance(x, str)]
         return FlowVerdict(
             flow_name=d["flow_name"],
             current_owner=d["current_owner"],
@@ -413,6 +485,7 @@ def _verdict_from_dict(d: dict[str, Any]) -> FlowVerdict | None:
             destination=d.get("destination"),
             confidence=int(d["confidence"]),
             reasoning=d.get("reasoning", ""),
+            also_belongs_to=also,
         )
     except (KeyError, TypeError, ValueError):
         return None

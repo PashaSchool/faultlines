@@ -662,3 +662,129 @@ class TestProtectedBuckets:
         assert "documentation" in _PROTECTED_BUCKETS
         assert "examples" in _PROTECTED_BUCKETS
         assert "developer-infrastructure" in _PROTECTED_BUCKETS
+
+
+# ── Sprint 12 Day 3.5: multi-feature ownership ────────────────────────
+
+
+def test_coerce_verdict_parses_also_belongs_to():
+    from faultline.llm.flow_judge import _coerce_verdict
+    v = _coerce_verdict({
+        "flow": "create-organization-flow",
+        "from": "auth",
+        "decision": "keep",
+        "to": None,
+        "confidence": 5,
+        "also_belongs_to": ["billing", "notifications"],
+    })
+    assert v is not None
+    assert v.also_belongs_to == ["billing", "notifications"]
+
+
+def test_coerce_verdict_drops_self_reference():
+    """``also_belongs_to`` must not include the primary destination/current."""
+    from faultline.llm.flow_judge import _coerce_verdict
+    v = _coerce_verdict({
+        "flow": "x",
+        "from": "auth",
+        "decision": "move",
+        "to": "billing",
+        "confidence": 5,
+        "also_belongs_to": ["billing", "auth", "notifications"],
+    })
+    assert v is not None
+    assert v.also_belongs_to == ["notifications"]
+
+
+def test_coerce_verdict_caps_at_three():
+    from faultline.llm.flow_judge import _coerce_verdict
+    v = _coerce_verdict({
+        "flow": "x",
+        "from": "ui",
+        "decision": "keep",
+        "to": None,
+        "confidence": 5,
+        "also_belongs_to": ["a", "b", "c", "d", "e"],
+    })
+    assert v is not None
+    assert len(v.also_belongs_to) == 3
+
+
+def test_apply_writes_flow_secondaries():
+    from faultline.llm.flow_judge import FlowVerdict, _apply_verdicts
+    from faultline.llm.sonnet_scanner import DeepScanResult
+    result = DeepScanResult(
+        features={"auth": ["a.ts"], "billing": ["b.ts"], "notifications": ["n.ts"]},
+        flows={"auth": ["create-organization-flow"]},
+    )
+    verdicts = [FlowVerdict(
+        flow_name="create-organization-flow",
+        current_owner="auth",
+        decision="keep",
+        destination=None,
+        confidence=5,
+        also_belongs_to=["billing", "notifications"],
+    )]
+    _apply_verdicts(result, verdicts)
+    assert result.flow_secondaries["create-organization-flow"] == ["billing", "notifications"]
+
+
+def test_apply_drops_unknown_secondaries():
+    """Hallucinated feature names get filtered out, not written."""
+    from faultline.llm.flow_judge import FlowVerdict, _apply_verdicts
+    from faultline.llm.sonnet_scanner import DeepScanResult
+    result = DeepScanResult(
+        features={"auth": ["a.ts"], "billing": ["b.ts"]},
+        flows={"auth": ["create-org-flow"]},
+    )
+    verdicts = [FlowVerdict(
+        flow_name="create-org-flow",
+        current_owner="auth",
+        decision="keep",
+        destination=None,
+        confidence=5,
+        also_belongs_to=["billing", "made-up-feature"],
+    )]
+    _apply_verdicts(result, verdicts)
+    assert result.flow_secondaries["create-org-flow"] == ["billing"]
+
+
+def test_apply_secondaries_works_alongside_move():
+    """When verdict is move, both move AND record secondaries."""
+    from faultline.llm.flow_judge import FlowVerdict, _apply_verdicts
+    from faultline.llm.sonnet_scanner import DeepScanResult
+    result = DeepScanResult(
+        features={"i18n": [], "auth": [], "billing": ["b.ts"]},
+        flows={"i18n": ["pay-and-create-account-flow"]},
+    )
+    verdicts = [FlowVerdict(
+        flow_name="pay-and-create-account-flow",
+        current_owner="i18n",
+        decision="move",
+        destination="auth",
+        confidence=5,
+        also_belongs_to=["billing"],
+    )]
+    moves = _apply_verdicts(result, verdicts)
+    assert moves == 1
+    assert "pay-and-create-account-flow" in result.flows["auth"]
+    assert "pay-and-create-account-flow" not in result.flows["i18n"]
+    assert result.flow_secondaries["pay-and-create-account-flow"] == ["billing"]
+
+
+def test_verdict_roundtrip_through_cache_preserves_secondaries():
+    from faultline.llm.flow_judge import (
+        FlowVerdict, _verdict_from_dict, _verdict_to_dict,
+    )
+    v = FlowVerdict(
+        flow_name="x",
+        current_owner="auth",
+        decision="keep",
+        destination=None,
+        confidence=5,
+        also_belongs_to=["billing", "notifications"],
+    )
+    d = _verdict_to_dict(v)
+    v2 = _verdict_from_dict(d)
+    assert v2 is not None
+    assert v2.also_belongs_to == ["billing", "notifications"]

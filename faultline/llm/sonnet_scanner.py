@@ -139,6 +139,13 @@ class DeepScanResult:
     shared_participants_map: dict[str, list[Any]] = field(
         default_factory=dict,
     )
+    # Sprint 12 Day 3.5: multi-feature flow ownership. Maps a flow
+    # name → list of feature names it ALSO belongs to (besides its
+    # primary owner in ``flows``). Populated by ``flow_judge`` when
+    # the verdict says ``also_belongs_to: [...]``. Picked up at
+    # FeatureMap-build time and copied onto each Flow instance's
+    # ``secondary_features`` field.
+    flow_secondaries: dict[str, list[str]] = field(default_factory=dict)
 
     # ── dict read shims (legacy compat) ─────────────────────────────────
     def __getitem__(self, key: str) -> list[str]:
