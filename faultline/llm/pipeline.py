@@ -77,6 +77,7 @@ def run(
     rename_generic: bool = False,  # Fix #4: REVERTED — Haiku too conservative
     smart_aggregators: bool = False,  # Sprint 9: agentic 4-bucket classifier
     flow_judge: bool = True,  # Sprint 11: Haiku-judged flow re-attribution
+    flow_cluster: bool = True,  # Sprint 12: virtual cluster promotion (Layer A)
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -556,6 +557,29 @@ def run(
     # tracked as a future follow-up.
     result = _collapse_same_name_features(result)
 
+    # Stage 2.55 (Sprint 12 Day 3): Virtual cluster promotion. When the
+    # detector produces a coherent set of flows for a domain (auth,
+    # billing, notifications) but the feature menu has no matching
+    # feature, those flows attach to whatever catch-all bucket happens
+    # to own their entry-point file (i18n, ui shells, contracts).
+    # ``flow_judge`` (Stage 2.6) cannot fix this — it only moves flows
+    # between *existing* features. ``promote_virtual_clusters`` carves
+    # the auth-named files out of those buckets and creates a synthetic
+    # ``auth`` feature for the orphaned flows to land on. Trigger
+    # conditions are conservative (≥3 flows, no domain-named feature
+    # already, ≥1 matching path); see ``faultline.llm.flow_cluster``.
+    if flow_cluster and not is_library:
+        try:
+            from faultline.llm.flow_cluster import promote_virtual_clusters
+            created = promote_virtual_clusters(result)
+            if created:
+                logger.info(
+                    "flow_cluster: promoted %d synthetic feature(s)",
+                    created,
+                )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("flow_cluster: stage failed (%s) — skipping", exc)
+
     # Stage 2.6: Flow re-attribution. Some flows land on the wrong
     # feature because the flow detector attaches flows by entry-point
     # file ownership — auth UI components might be in feature
@@ -577,10 +601,17 @@ def run(
     if flow_judge:
         try:
             from faultline.llm.flow_judge import judge_flow_attribution
+            _slug = None
+            if repo_root is not None:
+                try:
+                    _slug = repo_root.name
+                except Exception:  # noqa: BLE001
+                    _slug = None
             moves = judge_flow_attribution(
                 result,
                 api_key=api_key,
                 tracker=tracker,
+                repo_slug=_slug,
             )
             judge_ran = True
             logger.info("flow_judge: applied %d high-confidence moves", moves)
