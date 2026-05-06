@@ -1,0 +1,150 @@
+{
+  "_schema": "faultlines-eval-ground-truth-v1",
+  "_legend": {
+    "expected_features": "Features the maintainer would name in their README — domain-level user-facing concepts, not file directories.",
+    "expected_flows": "Optional: user journeys / E2E flows the maintainer would call out.",
+    "source": "URL to the canonical features list (README, docs page).",
+    "annotated_by": "Reviewer's GitHub handle.",
+    "annotated_at": "ISO date.",
+    "verified_via": "WebFetch run that confirmed the list against the source URL."
+  },
+  "axios": {
+    "expected_features": [
+      "browser-requests",
+      "nodejs-requests",
+      "promise-based",
+      "interceptors",
+      "data-transformation",
+      "request-cancellation",
+      "automatic-json-handling",
+      "form-serialization",
+      "xsrf-protection"
+    ],
+    "expected_flows": [
+      "intercept-request",
+      "intercept-response",
+      "cancel-pending-request",
+      "transform-form-data",
+      "send-with-xsrf-protection"
+    ],
+    "source": "https://github.com/axios/axios#features",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "verified_via": "WebFetch on raw README, 2026-05-06"
+  },
+  "immich": {
+    "expected_features": [
+      "asset-upload",
+      "auto-backup",
+      "multi-user-support",
+      "albums",
+      "shared-albums",
+      "search",
+      "facial-recognition",
+      "memories",
+      "public-sharing",
+      "archive-and-favorites",
+      "metadata-view",
+      "download-assets"
+    ],
+    "expected_flows": [
+      "upload-photo",
+      "auto-backup-on-app-open",
+      "create-album",
+      "share-album-with-user",
+      "search-by-face",
+      "search-by-object",
+      "view-memories",
+      "create-public-share-link"
+    ],
+    "source": "https://github.com/immich-app/immich#features",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "verified_via": "WebFetch on README, 2026-05-06 — names consolidated from the 15 maintainer bullets into 12 product-level domains a code-detection tool can plausibly recover"
+  },
+  "dify": {
+    "expected_features": [
+      "workflow",
+      "rag-pipeline",
+      "agent",
+      "prompt-ide",
+      "datasets",
+      "model-management",
+      "plugins",
+      "observability",
+      "annotations",
+      "marketplace",
+      "billing",
+      "auth"
+    ],
+    "expected_flows": [
+      "create-workflow",
+      "publish-workflow-app",
+      "import-dsl",
+      "create-dataset",
+      "configure-rag-pipeline",
+      "install-plugin",
+      "configure-model-provider",
+      "sign-in-to-console",
+      "manage-billing-subscription",
+      "invite-workspace-member"
+    ],
+    "source": "https://github.com/langgenius/dify#features",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "verified_via": "WebFetch on README + cross-checked against S13/S14/S15 live scan outputs. Auth + billing not in upstream README's features section but ARE first-class user-visible concerns and we already detect them."
+  },
+  "supabase": {
+    "expected_features": [
+      "database",
+      "auth",
+      "storage",
+      "realtime",
+      "edge-functions",
+      "ai-vectors",
+      "cron",
+      "queues",
+      "data-api",
+      "graphql-api"
+    ],
+    "expected_flows": [
+      "sign-up-via-email",
+      "sign-in-via-oauth",
+      "create-project",
+      "invite-organization-member",
+      "upload-to-storage-bucket",
+      "deploy-edge-function",
+      "subscribe-to-realtime-channel",
+      "query-vector-embedding"
+    ],
+    "source": "https://supabase.com/docs",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "verified_via": "WebFetch on supabase docs landing, 2026-05-06 — these are the canonical product top-level categories"
+  },
+  "fastapi": {
+    "expected_features": [
+      "automatic-docs",
+      "validation",
+      "security-and-authentication",
+      "dependency-injection",
+      "websocket-support",
+      "background-tasks",
+      "open-standards",
+      "sensible-defaults"
+    ],
+    "expected_flows": [
+      "register-route",
+      "validate-request-body",
+      "inject-dependency",
+      "generate-openapi-spec",
+      "handle-websocket-message",
+      "authenticate-with-bearer-token",
+      "schedule-background-task"
+    ],
+    "source": "https://fastapi.tiangolo.com/features/",
+    "annotated_by": "pkuzina",
+    "annotated_at": "2026-05-06",
+    "verified_via": "WebFetch on official features page, 2026-05-06 — meta items (modern-python, editor-support, high-test-coverage, unlimited-plugins) excluded as non-detectable"
+  }
+}

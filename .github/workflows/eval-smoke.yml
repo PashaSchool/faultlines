@@ -1,0 +1,58 @@
+name: eval-smoke
+
+# Sprint 16 Day 1 — free, fast, blocks merge.
+#
+# Triggered on every PR targeting main (typical dev → main flow).
+# Runs the offline regression suite: unit tests + the explicit
+# S15 commit_prefix_enrichment guard test. No LLM, no API key, no
+# network beyond pip install. Designed to finish in ≤90s so it's
+# painless to re-run.
+#
+# A separate eval-llm.yml (Day 3) runs the LLM-based judge when a PR
+# carries the ``eval`` label or someone triggers it manually.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: eval-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Eval Smoke (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[mcp,watch]'
+          pip install pytest pytest-cov
+
+      # Smoke tier 1: unit tests for every module that shipped in
+      # Sprints 12-15. The eval/ subset is gated by repo presence
+      # (skipif) so it no-ops on CI runners that don't have the
+      # dify benchmark checked out.
+      - name: Run unit tests (excluding eval/)
+        run: pytest tests/ --ignore=tests/eval -q --no-cov
+        continue-on-error: false
+
+      # Smoke tier 2: eval suite ONLY runs cleanly with frozen
+      # fixtures. The S15 regression test currently needs a local
+      # dify checkout — on CI it skips. We surface it as a separate
+      # step so the badge stays honest.
+      - name: Run eval smoke tests
+        run: pytest tests/eval/test_eval_smoke.py -v --no-cov
+        continue-on-error: false
