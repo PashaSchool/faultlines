@@ -21,6 +21,9 @@ import json
 import sys
 from pathlib import Path
 
+from faultline.analyzer.feature_category import (
+    Category, classify_feature, tier_for,
+)
 from tests.eval.failure_modes import classify_all, summarise
 from tests.eval.judge import judge_run
 
@@ -59,16 +62,41 @@ def _latest_feature_map(repo: str) -> Path | None:
     return None
 
 
-def _detected_features(fm_path: Path) -> tuple[list[str], list[str]]:
-    """Extract feature names + flow names from a feature-map JSON."""
+def _detected_features(
+    fm_path: Path,
+) -> tuple[list[str], list[str], dict[str, str], dict[str, int]]:
+    """Extract detected names + flows + tier breakdown.
+
+    Returns:
+        product_supporting_features: names eligible for the judge.
+        product_supporting_flows: flow names whose parent feature is
+            product or supporting (hidden-tier flows are pipeline noise).
+        per_feature_tier: name → tier for the report.
+        tier_counts: tier name → count of features.
+    """
     fm = json.loads(fm_path.read_text())
-    feature_names: list[str] = []
-    flow_names: list[str] = []
+    eligible_features: list[str] = []
+    eligible_flows: list[str] = []
+    per_feature_tier: dict[str, str] = {}
+    tier_counts: dict[str, int] = {"product": 0, "supporting": 0, "hidden": 0}
+
     for f in fm.get("features", []):
-        feature_names.append(f["name"])
+        name = f["name"]
+        cat = classify_feature(
+            name, f.get("paths", []), f.get("description"),
+        )
+        tier = tier_for(cat)
+        per_feature_tier[name] = tier
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+        # Hidden tier (tooling / docs / deployment / synthetic) is
+        # pipeline noise that ground truth doesn't expect to be
+        # detected. Skip from the eval to keep precision honest.
+        if tier == "hidden":
+            continue
+        eligible_features.append(name)
         for fl in f.get("flows", []) or []:
-            flow_names.append(fl["name"])
-    return feature_names, flow_names
+            eligible_flows.append(fl["name"])
+    return eligible_features, eligible_flows, per_feature_tier, tier_counts
 
 
 def main() -> int:
@@ -110,7 +138,10 @@ def main() -> int:
             }
             continue
 
-        detected_features, detected_flows = _detected_features(fm_path)
+        (
+            detected_features, detected_flows,
+            per_feature_tier, tier_counts,
+        ) = _detected_features(fm_path)
 
         feat_result = judge_run(
             expected=expected_features, detected=detected_features, repo=repo,
@@ -142,10 +173,14 @@ def main() -> int:
         out["repos"][repo] = {
             "status": "scored",
             "scan_path": str(fm_path.relative_to(ROOT) if str(fm_path).startswith(str(ROOT)) else fm_path),
+            "tier_breakdown": tier_counts,
             "feature": {
                 "coverage": round(feat_result.coverage, 3),
                 "precision": round(feat_result.precision, 3),
                 "f1": round(feat_result.f1, 3),
+                "n_expected": len(expected_features),
+                "n_detected_eligible": len(detected_features),
+                "n_detected_total": sum(tier_counts.values()),
                 "delta_coverage": round(
                     feat_result.coverage - baseline_repo.get("feature", {}).get("coverage", feat_result.coverage),
                     3,
@@ -155,6 +190,8 @@ def main() -> int:
                 "coverage": round(flow_result.coverage, 3) if flow_result else None,
                 "precision": round(flow_result.precision, 3) if flow_result else None,
                 "f1": round(flow_result.f1, 3) if flow_result else None,
+                "n_expected": len(expected_flows) if expected_flows else 0,
+                "n_detected_eligible": len(detected_flows),
             } if flow_result else None,
             "misses": [
                 {
@@ -210,10 +247,27 @@ def main() -> int:
             print(f"  {repo:12s}  no scan available — skipped")
             continue
         feat = data["feature"]
+        tiers = data.get("tier_breakdown", {})
         print(
             f"  {repo:12s}  cov={feat['coverage']:.1%}  "
-            f"prec={feat['precision']:.1%}  f1={feat['f1']:.1%}"
+            f"prec={feat['precision']:.1%}  f1={feat['f1']:.1%}  "
+            f"[{feat['n_expected']}exp / "
+            f"{feat['n_detected_eligible']}eligible / "
+            f"{feat['n_detected_total']}total]"
         )
+        if tiers:
+            print(
+                f"               product={tiers.get('product',0)}  "
+                f"supporting={tiers.get('supporting',0)}  "
+                f"hidden={tiers.get('hidden',0)}  ← excluded from precision"
+            )
+        if data.get("flow") and data["flow"].get("n_expected"):
+            fl = data["flow"]
+            print(
+                f"               flows: cov={fl['coverage']:.1%}  "
+                f"prec={fl['precision']:.1%}  "
+                f"[{fl['n_expected']}exp / {fl['n_detected_eligible']}eligible]"
+            )
 
     return 0
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 def _row(repo: str, data: dict) -> str:
     if data["status"] == "no-scan-available":
-        return f"| {repo} | — | — | — | _no scan available_ |"
+        return f"| {repo} | — | — | — | — | _no scan available_ |"
     feat = data["feature"]
     cov = feat["coverage"]
     prec = feat["precision"]
@@ -27,9 +27,35 @@ def _row(repo: str, data: dict) -> str:
         else "—"
     )
     delta_str = f"{delta:+.1%}" if delta else "—"
+    n_exp = feat.get("n_expected", "?")
+    n_elig = feat.get("n_detected_eligible", "?")
+    n_total = feat.get("n_detected_total", "?")
+    sample = f"{n_exp}exp / {n_elig}elig / {n_total}total"
     return (
         f"| {repo} | {cov:.1%} | {prec:.1%} | {f1:.1%} | "
-        f"{delta_emoji} {delta_str} |"
+        f"`{sample}` | {delta_emoji} {delta_str} |"
+    )
+
+
+def _tier_row(repo: str, data: dict) -> str:
+    if data["status"] != "scored":
+        return ""
+    t = data.get("tier_breakdown", {})
+    return (
+        f"| {repo} | {t.get('product', 0)} | "
+        f"{t.get('supporting', 0)} | {t.get('hidden', 0)} |"
+    )
+
+
+def _flow_row(repo: str, data: dict) -> str:
+    if data["status"] != "scored" or not data.get("flow"):
+        return ""
+    fl = data["flow"]
+    if not fl.get("n_expected"):
+        return ""
+    return (
+        f"| {repo} | {fl['coverage']:.1%} | {fl['precision']:.1%} | "
+        f"{fl['f1']:.1%} | `{fl['n_expected']}exp / {fl['n_detected_eligible']}elig` |"
     )
 
 
@@ -87,10 +113,33 @@ def render(results: dict) -> str:
         )
         parts.append("")
 
-    parts.append("| repo | coverage | precision | F1 | Δ vs main |")
-    parts.append("|---|---:|---:|---:|---:|")
+    parts.append("#### Features")
+    parts.append("")
+    parts.append("| repo | coverage | precision | F1 | sample size | Δ vs main |")
+    parts.append("|---|---:|---:|---:|---|---:|")
     for repo in sorted(repos):
         parts.append(_row(repo, repos[repo]))
+
+    flow_rows = [_flow_row(r, repos[r]) for r in sorted(repos)]
+    flow_rows = [r for r in flow_rows if r]
+    if flow_rows:
+        parts.append("")
+        parts.append("#### Flows")
+        parts.append("")
+        parts.append("| repo | coverage | precision | F1 | sample size |")
+        parts.append("|---|---:|---:|---:|---|")
+        parts.extend(flow_rows)
+
+    tier_rows = [_tier_row(r, repos[r]) for r in sorted(repos)]
+    tier_rows = [r for r in tier_rows if r]
+    if tier_rows:
+        parts.append("")
+        parts.append("#### Detected feature tiers")
+        parts.append("_Hidden tier (synthetic / tooling / docs / deployment) excluded from precision._")
+        parts.append("")
+        parts.append("| repo | product | supporting | hidden |")
+        parts.append("|---|---:|---:|---:|")
+        parts.extend(tier_rows)
 
     breakdown = _failure_breakdown(repos)
     if breakdown:
