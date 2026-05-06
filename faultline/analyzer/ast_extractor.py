@@ -481,6 +481,64 @@ def extract_symbol_ranges(source: str) -> list[SymbolRange]:
     return ranges
 
 
+def get_symbol_range(
+    rel_path: str,
+    source: str,
+    symbol_name: str,
+) -> SymbolRange | None:
+    """Return the line range of a single named symbol in ``source``.
+
+    Sprint 12 Day 4 — used by the per-flow symbol picker to resolve
+    a Haiku-selected ``(file, symbol)`` pair into a concrete
+    ``SymbolRange`` with start_line / end_line. Returns ``None`` if
+    the symbol cannot be located.
+
+    Routes through the appropriate language extractor based on file
+    extension:
+        - ``.py`` → Python class / function regex
+        - ``.ts`` / ``.tsx`` / ``.js`` / ``.jsx`` / ``.mts`` / ``.cts``
+          → TS/JS export regex
+        - other → ``None`` (not yet supported)
+    """
+    if not symbol_name:
+        return None
+    ext = ""
+    dot = rel_path.rfind(".")
+    if dot >= 0:
+        ext = rel_path[dot:].lower()
+
+    if ext == ".py":
+        sig = _parse_python_file(rel_path, source)
+        ranges = sig.symbol_ranges
+    elif ext in {".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"}:
+        ranges = extract_symbol_ranges(source)
+    else:
+        return None
+
+    for r in ranges:
+        if r.name == symbol_name:
+            return r
+    return None
+
+
+def list_exported_symbols(rel_path: str, source: str) -> list[SymbolRange]:
+    """All exported / top-level symbols in a file with their ranges.
+
+    Sprint 12 Day 4 — used by the symbol picker to feed the candidate
+    list into Haiku. Empty list when language is unsupported or the
+    file has no symbols.
+    """
+    ext = ""
+    dot = rel_path.rfind(".")
+    if dot >= 0:
+        ext = rel_path[dot:].lower()
+    if ext == ".py":
+        return _parse_python_file(rel_path, source).symbol_ranges
+    if ext in {".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"}:
+        return extract_symbol_ranges(source)
+    return []
+
+
 def extract_named_imports(source: str) -> dict[str, set[str]]:
     """Extracts named imports from TS/JS source.
 

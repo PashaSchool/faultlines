@@ -82,6 +82,16 @@ tests/
   test_flow_pipeline_e2e.py — NEW (regression на mocked dify slice)
 ```
 
+## Amendment (Day 3, evening) — Multi-feature flow ownership
+
+External review (другий агент) підняв три ідеї які підняли б точність значно вище без виходу за скоуп ("фічі не чіпати"):
+
+1. **Multi-feature flows** — `Flow.secondary_features: list[str]` поле. Flow може legitimately належати кільком фічам ("Create Organization" → Auth + Billing + Notifications).
+2. **3-signal evidence** для re-attribution: file_ownership_score + semantic + call_graph_centrality. Замість одного Haiku verdict — детерміністичні сигнали ідуть у prompt як evidence, Haiku приймає рішення на base'і.
+3. **Cross-validation pass** — другий Haiku batch після Layer C: для кожної фічі питаємо "які сусідні flows теж сюди?".
+
+Інтегровано як **Day 3.5** (новий день між 3 і 4) + Day 7 розширено.
+
 ## Day-by-day
 
 ### Day 1 — діагностика baseline + dataset
@@ -104,6 +114,19 @@ tests/
 - Стейдж 2.55 у `pipeline.py` перед існуючим flow_judge.
 - Run на dify → перевірити, що auth flows тепер у "auth" фічі а не в "i18n".
 - Ground truth metric: attribution_accuracy має піднятись з ~50% до ≥85%.
+
+### Day 3.5 — Multi-feature ownership + 3-signal evidence
+
+- Add `Flow.secondary_features: list[str] = []` to models. Inject from new
+  `result.flow_secondaries: dict[flow_name, list[str]]` side channel.
+- New `faultline/llm/flow_signals.py`:
+    - `file_ownership_score(flow, feature_paths)` — % of flow's paths owned
+    - `call_graph_centrality(flow, feature_paths, repo_root)` — fan-in
+- Refactor `flow_judge._build_prompt` to inject signal evidence per feature.
+- Extend `FlowVerdict` with `also_belongs_to: list[str]`.
+- Eval extension: `flow-truth.yaml` adds optional `expected_secondary: [...]`.
+- Tests: synthetic Create-Organization fixture lands primary=Auth +
+  secondary=[Billing, Notifications].
 
 ### Day 4 — Layer B core: symbol picker prompt + resolver
 
