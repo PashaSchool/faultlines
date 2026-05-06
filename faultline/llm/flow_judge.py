@@ -89,11 +89,18 @@ class FlowVerdict:
 @dataclass
 class FlowEntry:
     """One flow as seen by the judge — name + current owner +
-    optional description for context."""
+    optional description for context.
+
+    Sprint 13 — ``signals`` is an optional per-feature score map
+    ``{feature_name: {ownership: 0..1, centrality: 0..1}}`` injected
+    by the post-Layer-B re-judge pass. When present, the judge sees
+    deterministic evidence on top of pure semantics.
+    """
 
     name: str
     current_owner: str
     description: str = ""
+    signals: dict[str, dict[str, float]] | None = None
 
 
 _SYSTEM_PROMPT = """\
@@ -229,25 +236,65 @@ def _build_prompt(
     flows: list[FlowEntry],
     features: dict[str, str],  # feature_name → description
 ) -> str:
-    """One JSON message: feature menu + flows."""
+    """One JSON message: feature menu + flows.
+
+    Sprint 13 — when any ``FlowEntry`` carries ``signals``, render
+    them as a "deterministic_evidence" block in the per-flow object.
+    The judge is instructed (in the system prompt) to weight high
+    ownership / centrality scores when disagreeing with the current
+    owner.
+    """
+    has_signals = any(f.signals for f in flows)
     payload = {
         "features": [
             {"name": name, "description": desc}
             for name, desc in features.items()
         ],
         "flows": [
-            {
-                "name": f.name,
-                "description": f.description,
-                "current_owner": f.current_owner,
-            }
-            for f in flows
+            _flow_to_payload(f) for f in flows
         ],
     }
-    return (
-        "Re-attribute these flows to the best-fit feature.\n\n"
-        + json.dumps(payload, indent=2, ensure_ascii=False)
+    intro = (
+        "Re-attribute these flows to the best-fit feature.\n"
+        + (
+            "\nEach flow includes deterministic_evidence "
+            "(file_ownership_pct + call_graph_centrality_pct per "
+            "candidate feature). Use it as ground truth: when a "
+            "feature has dramatically higher ownership than the "
+            "current owner, MOVE there even if the flow's name "
+            "looks neutral.\n"
+            if has_signals else ""
+        )
     )
+    return intro + "\n" + json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _flow_to_payload(f: FlowEntry) -> dict:
+    out: dict = {
+        "name": f.name,
+        "description": f.description,
+        "current_owner": f.current_owner,
+    }
+    if f.signals:
+        # Trim to the top 5 features by ownership to keep prompt small.
+        ranked = sorted(
+            f.signals.items(),
+            key=lambda kv: -kv[1].get("ownership", 0.0),
+        )[:5]
+        evidence = []
+        for name, scores in ranked:
+            ow = round(scores.get("ownership", 0.0) * 100)
+            cn = round(scores.get("centrality", 0.0) * 100)
+            if ow == 0 and cn == 0:
+                continue
+            evidence.append({
+                "feature": name,
+                "file_ownership_pct": ow,
+                "call_graph_centrality_pct": cn,
+            })
+        if evidence:
+            out["deterministic_evidence"] = evidence
+    return out
 
 
 def _parse_response(text: str) -> list[dict] | None:
@@ -511,6 +558,134 @@ def _features_for_prompt(result: "DeepScanResult") -> dict[str, str]:
             continue
         out[name] = result.descriptions.get(name, "")
     return out
+
+
+def re_judge_with_signals(
+    result: "DeepScanResult",
+    *,
+    api_key: str | None = None,
+    model: str = DEFAULT_MODEL,
+    tracker: CostTracker | None = None,
+    client: _AnthropicLike | None = None,
+    disagreement_threshold: float = 0.30,
+) -> int:
+    """Sprint 13 Day 1 — second judge pass with deterministic signals.
+
+    Runs AFTER Layer B (flow_symbols) populates ``flow_participants``
+    so we can compute file ownership per (flow, feature). Selects only
+    flows where some non-owner feature has ownership_score ≥
+    current_owner_score + ``disagreement_threshold`` and asks Haiku to
+    decide. The judge sees the per-feature evidence in the prompt.
+
+    Returns count of moves applied. Skips silently if no flows have
+    enough participant data to compute signals.
+    """
+    from faultline.llm.flow_signals import (
+        file_ownership_distribution,
+    )
+
+    features = _features_for_prompt(result)
+    if not features:
+        return 0
+
+    feature_paths = {
+        name: result.features.get(name, []) for name in features
+    }
+
+    # Collect (owner, flow_name, paths) for every flow with ≥2 paths
+    # in flow_participants. Anything fewer can't disagree meaningfully.
+    candidates: list[FlowEntry] = []
+    for owner, flow_names in result.flows.items():
+        if owner in _PROTECTED_BUCKETS:
+            continue
+        feat_parts = result.flow_participants.get(owner, {})
+        for flow_name in flow_names:
+            parts = feat_parts.get(flow_name, [])
+            paths: list[str] = []
+            for p in parts:
+                fp = (
+                    p.get("path") if isinstance(p, dict)
+                    else getattr(p, "path", None)
+                )
+                if fp and fp not in paths:
+                    paths.append(fp)
+            if len(paths) < 2:
+                continue
+            ownership = file_ownership_distribution(paths, feature_paths)
+            current_score = ownership.get(owner, 0.0)
+            best_other = max(
+                ((n, s) for n, s in ownership.items() if n != owner),
+                key=lambda x: x[1],
+                default=("", 0.0),
+            )
+            if best_other[1] - current_score < disagreement_threshold:
+                continue
+            descs = result.flow_descriptions.get(owner, {})
+            description = descs.get(flow_name, "") if isinstance(descs, dict) else ""
+            candidates.append(FlowEntry(
+                name=flow_name,
+                current_owner=owner,
+                description=description,
+                signals={
+                    name: {
+                        "ownership": ownership.get(name, 0.0),
+                        "centrality": 0.0,  # Layer C centrality TBD
+                    }
+                    for name in features
+                },
+            ))
+
+    if not candidates:
+        return 0
+
+    if client is None:
+        api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return 0
+        try:
+            from anthropic import Anthropic
+        except ImportError:
+            return 0
+        client = Anthropic(api_key=api_key)
+
+    params = deterministic_params(model)
+    try:
+        response = client.messages.create(
+            model=model,
+            system=_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": _build_prompt(candidates, features),
+            }],
+            max_tokens=DEFAULT_MAX_TOKENS,
+            **params,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("re_judge_with_signals: API call failed (%s)", exc)
+        return 0
+
+    if tracker is not None:
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                tracker.record(
+                    model=model,
+                    input_tokens=getattr(usage, "input_tokens", 0),
+                    output_tokens=getattr(usage, "output_tokens", 0),
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    text = ""
+    for block in getattr(response, "content", []):
+        if getattr(block, "type", "") == "text":
+            text += getattr(block, "text", "")
+    raw = _parse_response(text) or []
+    verdicts = [
+        v for entry in raw
+        if (v := _coerce_verdict(entry)) is not None
+    ]
+    return _apply_verdicts(result, verdicts)
 
 
 def judge_flow_attribution(

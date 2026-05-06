@@ -80,6 +80,7 @@ def run(
     flow_cluster: bool = True,  # Sprint 12: virtual cluster promotion (Layer A)
     flow_symbols: bool = True,  # Sprint 12: per-flow symbol resolution (Layer B)
     flow_sweep: bool = True,  # Sprint 12: entry-point sweep + cross-val (Layer C)
+    flow_resignal: bool = True,  # Sprint 13: re-judge with deterministic signals
 ) -> DeepScanResult | None:
     """Run the new feature detection pipeline against a single repo.
 
@@ -660,6 +661,30 @@ def run(
                 "participants from prior stages",
                 exc,
             )
+
+    # Stage 2.75 (Sprint 13 Day 1): Re-judge with deterministic
+    # signals. After Layer B populated flow_participants with concrete
+    # symbol-bearing files, we now know each flow's actual file
+    # ownership distribution. Pick flows whose paths overwhelmingly
+    # belong to a feature OTHER than their current owner (the
+    # ``manage-billing-subscription``-in-``contracts`` class) and ask
+    # Haiku once more — this time with the per-feature ownership
+    # percentages in the prompt as evidence. Cheap (one batched call,
+    # only flows with strong disagreement, typically <20 of 200).
+    if flow_resignal and not is_library:
+        try:
+            from faultline.llm.flow_judge import re_judge_with_signals
+            moves = re_judge_with_signals(
+                result,
+                api_key=api_key,
+                tracker=tracker,
+            )
+            if moves:
+                logger.info(
+                    "flow_resignal: applied %d signal-based move(s)", moves,
+                )
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            logger.warning("flow_resignal: stage failed (%s) — skipping", exc)
 
     # Stage 2.8 (Sprint 12 Day 6): Layer C — entry-point sweep + cross-
     # validation. Every route handler / exported handler-pattern symbol

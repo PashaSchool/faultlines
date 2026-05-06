@@ -6,6 +6,7 @@ covers end-to-end on real scans.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from faultline.llm.flow_judge import (
@@ -788,3 +789,101 @@ def test_verdict_roundtrip_through_cache_preserves_secondaries():
     v2 = _verdict_from_dict(d)
     assert v2 is not None
     assert v2.also_belongs_to == ["billing", "notifications"]
+
+
+# ── Sprint 13 Day 1: signals injection + re-judge ─────────────────────
+
+
+def test_build_prompt_includes_evidence_when_signals_present():
+    from faultline.llm.flow_judge import FlowEntry, _build_prompt
+    flows = [FlowEntry(
+        name="manage-billing-subscription",
+        current_owner="contracts",
+        description="user manages plan",
+        signals={
+            "billing": {"ownership": 0.73, "centrality": 0.0},
+            "contracts": {"ownership": 0.27, "centrality": 0.0},
+        },
+    )]
+    prompt = _build_prompt(flows, {"contracts": "...", "billing": "..."})
+    assert "deterministic_evidence" in prompt
+    assert "73" in prompt  # 73% ownership rendered
+    assert "billing" in prompt
+
+
+def test_build_prompt_omits_evidence_when_no_signals():
+    from faultline.llm.flow_judge import FlowEntry, _build_prompt
+    flows = [FlowEntry(name="x", current_owner="auth")]
+    prompt = _build_prompt(flows, {"auth": ""})
+    assert "deterministic_evidence" not in prompt
+
+
+def test_flow_to_payload_drops_zero_evidence_rows():
+    from faultline.llm.flow_judge import FlowEntry, _flow_to_payload
+    f = FlowEntry(
+        name="x",
+        current_owner="a",
+        signals={
+            "a": {"ownership": 0.5, "centrality": 0.0},
+            "b": {"ownership": 0.0, "centrality": 0.0},
+        },
+    )
+    out = _flow_to_payload(f)
+    features = [e["feature"] for e in out["deterministic_evidence"]]
+    assert features == ["a"]
+
+
+def test_re_judge_skips_when_no_disagreement():
+    """If current owner has highest ownership, no candidate."""
+    from faultline.llm.flow_judge import re_judge_with_signals
+
+    result = DeepScanResult(
+        features={"auth": ["a.ts", "b.ts"], "billing": ["c.ts"]},
+        flows={"auth": ["x"]},
+        descriptions={"auth": "", "billing": ""},
+    )
+    result.flow_participants["auth"] = {
+        "x": [{"path": "a.ts"}, {"path": "b.ts"}],
+    }
+    client = _FakeAnthropic(scripted=[])
+    n = re_judge_with_signals(result, client=client)
+    assert n == 0
+    assert client.messages.calls == []  # no API call when no candidates
+
+
+def test_re_judge_moves_when_signals_disagree():
+    """Flow whose paths predominantly belong to other feature gets moved."""
+    from faultline.llm.flow_judge import re_judge_with_signals
+
+    result = DeepScanResult(
+        features={
+            "contracts": ["c.ts"],
+            "billing": ["a.ts", "b.ts", "d.ts", "e.ts"],
+        },
+        flows={"contracts": ["manage-billing-flow"]},
+        descriptions={"contracts": "", "billing": "subscriptions"},
+    )
+    # Flow's paths overwhelmingly in billing (3/4 = 75%)
+    result.flow_participants["contracts"] = {
+        "manage-billing-flow": [
+            {"path": "a.ts"}, {"path": "b.ts"},
+            {"path": "d.ts"}, {"path": "c.ts"},
+        ],
+    }
+    client = _FakeAnthropic(scripted=[
+        _FakeResponse(content=[_FakeBlock(text=json.dumps({
+            "verdicts": [{
+                "flow": "manage-billing-flow",
+                "from": "contracts",
+                "decision": "move",
+                "to": "billing",
+                "confidence": 5,
+            }]
+        }))])
+    ])
+    n = re_judge_with_signals(result, client=client)
+    assert n == 1
+    assert "manage-billing-flow" in result.flows["billing"]
+    assert "manage-billing-flow" not in result.flows["contracts"]
+    # Verify prompt included evidence
+    assert "deterministic_evidence" in client.messages.calls[0]["messages"][0]["content"]
