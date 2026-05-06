@@ -887,3 +887,47 @@ def test_re_judge_moves_when_signals_disagree():
     assert "manage-billing-flow" not in result.flows["contracts"]
     # Verify prompt included evidence
     assert "deterministic_evidence" in client.messages.calls[0]["messages"][0]["content"]
+
+
+# ── Sprint 15 Day 1b: flow-set hash invalidation ──────────────────────
+
+
+def test_flow_set_hash_changes_with_flow_set():
+    from faultline.llm.flow_judge import FlowEntry, _flow_set_hash
+    a = [FlowEntry(name="x", current_owner="auth")]
+    b = [FlowEntry(name="x", current_owner="auth"), FlowEntry(name="y", current_owner="ui")]
+    assert _flow_set_hash(a) != _flow_set_hash(b)
+
+
+def test_flow_set_hash_stable_under_reorder():
+    from faultline.llm.flow_judge import FlowEntry, _flow_set_hash
+    a = [
+        FlowEntry(name="x", current_owner="auth"),
+        FlowEntry(name="y", current_owner="ui"),
+    ]
+    b = [
+        FlowEntry(name="y", current_owner="ui"),
+        FlowEntry(name="x", current_owner="auth"),
+    ]
+    assert _flow_set_hash(a) == _flow_set_hash(b)
+
+
+def test_load_cache_invalidates_on_flow_set_change(tmp_path):
+    from faultline.llm.flow_judge import _load_cache, _save_cache
+    cache_dir = tmp_path
+    _save_cache(cache_dir, "test", "feat-h", {"a::x": {"any": "thing"}}, "flow-h-OLD")
+    # Same feature hash, different flow hash → cache miss
+    out = _load_cache(cache_dir, "test", "feat-h", "flow-h-NEW")
+    assert out == {}
+    # Same flow hash → cache hit
+    out2 = _load_cache(cache_dir, "test", "feat-h", "flow-h-OLD")
+    assert "a::x" in out2
+
+
+def test_load_cache_legacy_no_flow_hash_not_invalidated(tmp_path):
+    """flow_hash=None preserves the S13 behaviour."""
+    from faultline.llm.flow_judge import _load_cache, _save_cache
+    cache_dir = tmp_path
+    _save_cache(cache_dir, "test", "feat-h", {"a::x": {}}, flow_hash=None)
+    out = _load_cache(cache_dir, "test", "feat-h", flow_hash=None)
+    assert "a::x" in out

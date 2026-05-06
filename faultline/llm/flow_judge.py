@@ -461,6 +461,21 @@ def _feature_set_hash(features: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+def _flow_set_hash(flows: list[FlowEntry]) -> str:
+    """Sprint 15 — hash over (current_owner, flow_name) pairs.
+
+    Companion to ``_feature_set_hash``. Cache invalidates when the
+    flow set changes — new flows promoted by Layer C, flows moved by
+    earlier judges, flows removed by collapse — so stale ``keep``
+    verdicts never replay against a different flow distribution.
+    """
+    payload = json.dumps(
+        sorted([(f.current_owner, f.name) for f in flows]),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
 def _cache_path(cache_dir: Path, repo_slug: str) -> Path:
     return cache_dir / f"flow-verdicts-{repo_slug}.json"
 
@@ -469,10 +484,13 @@ def _load_cache(
     cache_dir: Path | None,
     repo_slug: str,
     feature_hash: str,
+    flow_hash: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Read cached verdicts for this repo. Returns the verdict map
-    only when the stored feature_set_hash matches the current one;
-    on hash mismatch the cache is treated as empty (full re-judge).
+    """Read cached verdicts for this repo.
+
+    Sprint 15 — invalidates on EITHER feature-set or flow-set change.
+    The flow hash is optional for backwards-compat; legacy cache files
+    without it count as invalid and force a full re-judge.
     """
     if cache_dir is None:
         return {}
@@ -487,6 +505,8 @@ def _load_cache(
         return {}
     if data.get("feature_set_hash") != feature_hash:
         return {}
+    if flow_hash is not None and data.get("flow_set_hash") != flow_hash:
+        return {}
     raw = data.get("verdicts", {})
     return raw if isinstance(raw, dict) else {}
 
@@ -496,6 +516,7 @@ def _save_cache(
     repo_slug: str,
     feature_hash: str,
     verdict_map: dict[str, dict[str, Any]],
+    flow_hash: str | None = None,
 ) -> None:
     """Persist verdicts. Creates parent directory if needed; silently
     swallows IO errors so a broken cache never blocks a scan."""
@@ -507,6 +528,7 @@ def _save_cache(
         payload = {
             "version": _CACHE_VERSION,
             "feature_set_hash": feature_hash,
+            "flow_set_hash": flow_hash or "",
             "verdicts": verdict_map,
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
@@ -730,7 +752,8 @@ def judge_flow_attribution(
     if repo_slug is None:
         repo_slug = _slugify_repo(getattr(result, "repo_path", "") or "")
     feature_hash = _feature_set_hash(features)
-    cache = _load_cache(cache_dir, repo_slug, feature_hash)
+    flow_hash = _flow_set_hash(flows)  # Sprint 15
+    cache = _load_cache(cache_dir, repo_slug, feature_hash, flow_hash)
 
     cached_verdicts: list[FlowVerdict] = []
     fresh_flows: list[FlowEntry] = []
@@ -828,7 +851,7 @@ def judge_flow_attribution(
         for v in fresh_verdicts:
             key = f"{v.current_owner}::{v.flow_name}"
             merged[key] = _verdict_to_dict(v)
-        _save_cache(cache_dir, repo_slug, feature_hash, merged)
+        _save_cache(cache_dir, repo_slug, feature_hash, merged, flow_hash)
 
     moves = _apply_verdicts(result, all_verdicts)
     if moves:
