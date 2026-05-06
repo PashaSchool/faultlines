@@ -149,6 +149,15 @@ class Feature(BaseModel):
     # stays a stable slug used for dedup / config lookups / IDs.
     display_name: str | None = None
     description: str | None = None  # LLM-generated semantic description
+    # Sprint 16 polish — UX category. Drives dashboard tiering:
+    #   ``product`` (default) → main carousel
+    #   ``ui-system`` / ``i18n`` / ``contracts`` / ``sdk`` → supporting tile
+    #   ``tooling`` / ``documentation`` / ``deployment`` / ``synthetic``
+    #     → hidden until user expands
+    # Set deterministically by faultline.analyzer.feature_category.
+    # ``"product"`` default is backwards-compatible: pre-Sprint-16
+    # feature-map JSONs parse without the field.
+    category: str = "product"
     paths: list[str]          # directories/files belonging to this feature
     authors: list[str]        # contributors
     total_commits: int

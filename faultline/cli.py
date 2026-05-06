@@ -1119,6 +1119,23 @@ def analyze(
         # sees "Authentication" rather than "user-authentication".
         _populate_display_names(feature_map)
 
+        # Sprint 16 polish — categorize every feature for dashboard
+        # tiering. Pure deterministic, no LLM cost. Sets
+        # ``Feature.category`` to one of: product / ui-system / i18n /
+        # contracts / sdk / tooling / documentation / deployment /
+        # synthetic. Default is ``product``.
+        try:
+            from faultline.analyzer.feature_category import classify_feature
+            for feat in feature_map.features:
+                cat = classify_feature(
+                    feat.name, list(feat.paths), feat.description,
+                )
+                feat.category = cat.value
+        except Exception as exc:  # noqa: BLE001 — opportunistic
+            console.print(
+                f"[dim]feature_category: skipped ({type(exc).__name__}: {exc})[/dim]"
+            )
+
         # 6a.7: Post-process cleanup. Runs by default (gated by
         # ``--no-post-process`` for raw output). Applies the same
         # transformations as scripts/cleanup_feature_map.py:
